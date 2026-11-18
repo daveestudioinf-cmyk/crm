@@ -66,7 +66,7 @@ export function KanbanPage() {
     <div className="p-4 md:p-6 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 flex-wrap">
-          <h1 className="text-xl font-bold">Pipeline</h1>
+          <h1 className="text-xl font-bold">Embudo</h1>
           <div className="flex gap-1.5">
             {pipelines.map((p) => (
               <button
@@ -86,11 +86,11 @@ export function KanbanPage() {
           </div>
         </div>
         <Button size="sm" onClick={() => setNewOpen(true)}>
-          <Plus className="w-4 h-4" /> New {activePipe?.vocabulary?.deal || 'Lead'}
+          <Plus className="w-4 h-4" /> Nuevo {activePipe?.vocabulary?.deal || 'Lead'}
         </Button>
       </div>
 
-      {/* Mobile Stage Tabs (zero horizontal page scroll) */}
+      {/* Pestañas de etapas en móvil (cero scroll horizontal) */}
       <div className="md:hidden space-y-3">
         <div className="flex gap-1.5 overflow-x-auto pb-1">
           {stages.map((s: any) => (
@@ -116,14 +116,14 @@ export function KanbanPage() {
                   <div className="text-xs font-medium text-[var(--accent)] mt-1">${(l.value_cents / 100).toFixed(2)}</div>
                 </div>
                 <Button size="sm" variant="secondary" onClick={() => setMoveLead(l)}>
-                  Move <ArrowRight className="w-3.5 h-3.5" />
+                  Mover <ArrowRight className="w-3.5 h-3.5" />
                 </Button>
               </Card>
             ))}
         </div>
       </div>
 
-      {/* Desktop Kanban Columns */}
+      {/* Columnas Kanban escritorio */}
       <div className="hidden md:flex gap-4 overflow-x-auto pb-4">
         {stages.map((s: any) => {
           const colLeads = leads.filter((l) => l.stage_id === s.id);
@@ -154,7 +154,7 @@ export function KanbanPage() {
                   <div className="flex items-center justify-between pt-1">
                     <span className="text-xs font-medium text-[var(--accent)]">${(l.value_cents / 100).toFixed(2)}</span>
                     <button onClick={() => setMoveLead(l)} className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] cursor-pointer">
-                      Move
+                      Mover
                     </button>
                   </div>
                 </Card>
@@ -164,37 +164,35 @@ export function KanbanPage() {
         })}
       </div>
 
-      {/* Create Lead Sheet */}
-      <Sheet open={newOpen} onClose={() => setNewOpen(false)} title={`New ${activePipe?.vocabulary?.deal || 'Lead'}`}>
+      <Sheet open={newOpen} onClose={() => setNewOpen(false)} title={`Nuevo ${activePipe?.vocabulary?.deal || 'Lead'}`}>
         <form onSubmit={handleCreateLead} className="space-y-3">
           <div className="space-y-1">
-            <label className="text-xs font-medium">Title</label>
-            <Input required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Enterprise Plan" />
+            <label className="text-xs font-medium">Título</label>
+            <Input required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Plan Empresarial" />
           </div>
           <div className="space-y-1">
-            <label className="text-xs font-medium">Contact</label>
+            <label className="text-xs font-medium">Contacto</label>
             <select
               required
               value={contactId}
               onChange={(e) => setContactId(e.target.value)}
               className="h-10 w-full rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-3 text-sm"
             >
-              <option value="">Select contact...</option>
+              <option value="">Selecciona un contacto...</option>
               {contacts.map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
           </div>
           <div className="space-y-1">
-            <label className="text-xs font-medium">Value ($)</label>
+            <label className="text-xs font-medium">Valor ($)</label>
             <Input type="number" step="0.01" value={valueCents} onChange={(e) => setValueCents(e.target.value)} />
           </div>
-          <Button type="submit" className="w-full">Create</Button>
+          <Button type="submit" className="w-full">Crear</Button>
         </form>
       </Sheet>
 
-      {/* Move Stage Sheet */}
-      <Sheet open={!!moveLead} onClose={() => setMoveLead(null)} title={`Move "${moveLead?.title}"`}>
+      <Sheet open={!!moveLead} onClose={() => setMoveLead(null)} title={`Mover "${moveLead?.title}"`}>
         <div className="space-y-2">
           {stages.map((s: any) => (
             <button

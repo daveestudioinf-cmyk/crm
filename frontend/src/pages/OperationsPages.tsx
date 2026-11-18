@@ -22,9 +22,9 @@ export function ChannelsPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-4 max-w-4xl">
-      <h1 className="text-xl font-bold">WhatsApp Channels (Evolution Go / WAHA)</h1>
+      <h1 className="text-xl font-bold">Canales de WhatsApp (Evolution Go / WAHA)</h1>
       <form onSubmit={create} className="flex flex-wrap gap-2 max-w-xl">
-        <Input required className="flex-1 min-w-[180px]" placeholder="Session name (e.g. sales-main)" value={sessionName} onChange={(e) => setSessionName(e.target.value)} />
+        <Input required className="flex-1 min-w-[180px]" placeholder="Nombre de sesión (ej. ventas-principal)" value={sessionName} onChange={(e) => setSessionName(e.target.value)} />
         <select
           value={provider}
           onChange={(e) => setProvider(e.target.value)}
@@ -33,12 +33,12 @@ export function ChannelsPage() {
           <option value="evolution_go">Evolution Go (Multi-tenant)</option>
           <option value="waha">WAHA</option>
         </select>
-        <Button type="submit">Connect Number</Button>
+        <Button type="submit">Conectar Número</Button>
       </form>
       {(qr.base64 || qr.payload) && (
         <Card className="p-4 bg-teal-50 border-teal-200 text-xs space-y-2">
-          <div className="font-semibold">QR Pairing Ready — Scan with WhatsApp:</div>
-          {qr.base64 && <img src={qr.base64.startsWith('data:') ? qr.base64 : `data:image/png;base64,${qr.base64}`} alt="WhatsApp QR" className="w-48 h-48 rounded-lg border bg-white p-2" />}
+          <div className="font-semibold">QR listo — Escanea con WhatsApp:</div>
+          {qr.base64 && <img src={qr.base64.startsWith('data:') ? qr.base64 : `data:image/png;base64,${qr.base64}`} alt="QR WhatsApp" className="w-48 h-48 rounded-lg border bg-white p-2" />}
           {qr.payload && <code className="block break-all">{qr.payload}</code>}
         </Card>
       )}
@@ -47,13 +47,13 @@ export function ChannelsPage() {
           <Card key={ch.id} className="p-4 flex items-center justify-between">
             <div>
               <div className="font-semibold text-sm">{ch.session_name}</div>
-              <div className="text-xs text-[var(--text-muted)]">{ch.provider} • {ch.engine} • {ch.warmup_daily_limit}/day</div>
+              <div className="text-xs text-[var(--text-muted)]">{ch.provider} • {ch.engine} • {ch.warmup_daily_limit}/día</div>
             </div>
             <div className="flex items-center gap-2">
               <Badge tone={ch.status === 'WORKING' ? 'success' : 'warning'}>{ch.status}</Badge>
               {ch.status !== 'WORKING' && (
                 <Button size="sm" variant="secondary" onClick={() => apiFetch(`/channels/${ch.id}/reconnect`, { method: 'POST' }).then(load)}>
-                  Activate
+                  Activar
                 </Button>
               )}
             </div>
@@ -81,10 +81,10 @@ export function WebhooksPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-5 max-w-4xl">
-      <h1 className="text-xl font-bold">Webhooks & WHEN/IF/THEN Automations</h1>
+      <h1 className="text-xl font-bold">Webhooks y Automatizaciones WHEN/IF/THEN</h1>
       <form onSubmit={addSource} className="flex gap-2 max-w-md">
-        <Input required placeholder="Inbound source name (e.g. Landing Form)" value={name} onChange={(e) => setName(e.target.value)} />
-        <Button type="submit">Create Source</Button>
+        <Input required placeholder="Nombre de fuente (ej. Formulario Web)" value={name} onChange={(e) => setName(e.target.value)} />
+        <Button type="submit">Crear Fuente</Button>
       </form>
       <div className="space-y-2">
         {sources.map((s) => (
@@ -93,13 +93,13 @@ export function WebhooksPage() {
               <div className="font-semibold text-sm">{s.name}</div>
               <code className="text-xs text-[var(--text-muted)]">POST /api/v1/webhooks/in/{s.token}</code>
             </div>
-            <Badge tone="success">Active</Badge>
+            <Badge tone="success">Activo</Badge>
           </Card>
         ))}
       </div>
       <Card className="p-4 space-y-2">
-        <div className="font-semibold text-sm">Automation Rules ({rules.length})</div>
-        {rules.length === 0 && <div className="text-xs text-[var(--text-muted)]">No automation rules configured yet.</div>}
+        <div className="font-semibold text-sm">Reglas de Automatización ({rules.length})</div>
+        {rules.length === 0 && <div className="text-xs text-[var(--text-muted)]">Aún no hay reglas configuradas.</div>}
       </Card>
     </div>
   );
@@ -120,10 +120,10 @@ export function TasksPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-4 max-w-3xl">
-      <h1 className="text-xl font-bold">Tasks</h1>
+      <h1 className="text-xl font-bold">Tareas</h1>
       <form onSubmit={add} className="flex gap-2">
-        <Input required placeholder="Follow up with client..." value={title} onChange={(e) => setTitle(e.target.value)} />
-        <Button type="submit">Add Task</Button>
+        <Input required placeholder="Hacer seguimiento con el cliente..." value={title} onChange={(e) => setTitle(e.target.value)} />
+        <Button type="submit">Agregar Tarea</Button>
       </form>
       <div className="space-y-2">
         {tasks.map((t) => (
@@ -134,7 +134,7 @@ export function TasksPage() {
               variant="secondary"
               onClick={() => apiFetch(`/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: t.status === 'done' ? 'pending' : 'done' }) }).then(load)}
             >
-              {t.status === 'done' ? 'Reopen' : 'Complete'}
+              {t.status === 'done' ? 'Reabrir' : 'Completar'}
             </Button>
           </Card>
         ))}
@@ -148,16 +148,16 @@ export function RadarPage() {
   useEffect(() => { apiFetch('/radar').then(setItems); }, []);
   return (
     <div className="p-4 md:p-6 space-y-4 max-w-4xl">
-      <h1 className="text-xl font-bold">Radar (Cooling Conversations)</h1>
+      <h1 className="text-xl font-bold">Radar (Conversaciones enfriándose)</h1>
       <div className="space-y-2">
         {items.length === 0 ? (
-          <Card className="p-6 text-center text-xs text-[var(--text-muted)]">All conversations are healthy.</Card>
+          <Card className="p-6 text-center text-xs text-[var(--text-muted)]">Todas las conversaciones están al día.</Card>
         ) : (
           items.map((i) => (
             <Card key={i.id} className="p-3.5 flex items-center justify-between">
               <div>
                 <div className="font-semibold text-sm">{i.contact_name}</div>
-                <div className="text-xs text-[var(--text-muted)]">{i.last_message_preview || 'Awaiting reply'}</div>
+                <div className="text-xs text-[var(--text-muted)]">{i.last_message_preview || 'Esperando respuesta'}</div>
               </div>
               <Badge tone="warning">{i.status}</Badge>
             </Card>
@@ -173,15 +173,15 @@ export function MetricsPage() {
   useEffect(() => { apiFetch('/metrics').then(setM); }, []);
   return (
     <div className="p-4 md:p-6 space-y-4 max-w-4xl">
-      <h1 className="text-xl font-bold">Analytics & Performance</h1>
+      <h1 className="text-xl font-bold">Analítica y Rendimiento</h1>
       {m && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
-            ['Contacts', m.contacts_total],
-            ['Open Leads', m.leads_open],
-            ['Won Deals', m.leads_won],
-            ['Active Chats', m.conversations_open],
-            ['Msgs Today', m.messages_today],
+            ['Contactos', m.contacts_total],
+            ['Leads Abiertos', m.leads_open],
+            ['Ganados', m.leads_won],
+            ['Chats Activos', m.conversations_open],
+            ['Mensajes Hoy', m.messages_today],
           ].map(([k, v]) => (
             <Card key={String(k)} className="p-4">
               <div className="text-xs text-[var(--text-muted)]">{k}</div>
@@ -202,23 +202,23 @@ export function LGPDPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-4xl">
-      <h1 className="text-xl font-bold">LGPD Compliance & Immutable Audit Log</h1>
+      <h1 className="text-xl font-bold">Cumplimiento LGPD y Auditoría Inmutable</h1>
       <Card className="p-4 space-y-2">
-        <div className="font-semibold text-sm">LGPD Data & Redact Requests ({reqs.length})</div>
+        <div className="font-semibold text-sm">Solicitudes LGPD de Exportación / Borrado ({reqs.length})</div>
         {reqs.map((r) => (
           <div key={r.id} className="flex items-center justify-between text-xs py-1.5 border-b border-[var(--border)]">
             <span>{r.contact_name} — {r.request_type}</span>
             <div className="flex items-center gap-2">
               <Badge tone={r.status === 'completed' ? 'success' : 'warning'}>{r.status}</Badge>
               {r.status === 'pending' && (
-                <Button size="sm" onClick={() => apiFetch(`/lgpd/requests/${r.id}/execute`, { method: 'POST' }).then(load)}>Execute</Button>
+                <Button size="sm" onClick={() => apiFetch(`/lgpd/requests/${r.id}/execute`, { method: 'POST' }).then(load)}>Ejecutar</Button>
               )}
             </div>
           </div>
         ))}
       </Card>
       <Card className="p-4 space-y-2">
-        <div className="font-semibold text-sm">Recent Audit Trail</div>
+        <div className="font-semibold text-sm">Registro Reciente de Auditoría</div>
         {audit.slice(0, 15).map((a) => (
           <div key={a.id} className="text-xs flex justify-between py-1 border-b border-[var(--border)] last:border-0">
             <span className="font-mono">{a.action} ({a.resource_type})</span>
@@ -248,29 +248,29 @@ export function SettingsPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-4xl">
-      <h1 className="text-xl font-bold">Settings, Team & MCP API Tokens</h1>
+      <h1 className="text-xl font-bold">Configuración, Equipo y Tokens MCP</h1>
       <Card className="p-4 space-y-3">
-        <div className="font-semibold text-sm">Native Go MCP / REST API Tokens</div>
+        <div className="font-semibold text-sm">Tokens API para MCP Nativo en Go / REST</div>
         <form onSubmit={createToken} className="flex gap-2 max-w-md">
-          <Input required placeholder="Token name (e.g. Claude MCP)" value={tokName} onChange={(e) => setTokName(e.target.value)} />
-          <Button type="submit">Generate</Button>
+          <Input required placeholder="Nombre del token (ej. Claude MCP)" value={tokName} onChange={(e) => setTokName(e.target.value)} />
+          <Button type="submit">Generar</Button>
         </form>
         {newTok && (
           <div className="p-3 rounded-lg bg-teal-50 border border-teal-200 text-xs">
-            Copy once: <code className="font-mono font-bold break-all">{newTok}</code>
+            Cópialo ahora (solo se muestra una vez): <code className="font-mono font-bold break-all">{newTok}</code>
           </div>
         )}
         <div className="space-y-1.5">
           {tokens.map((t) => (
             <div key={t.id} className="flex items-center justify-between text-xs py-1.5 border-b border-[var(--border)]">
               <span className="font-medium">{t.name}</span>
-              <Button size="sm" variant="danger" onClick={() => apiFetch(`/api-tokens/${t.id}`, { method: 'DELETE' }).then(load)}>Revoke</Button>
+              <Button size="sm" variant="danger" onClick={() => apiFetch(`/api-tokens/${t.id}`, { method: 'DELETE' }).then(load)}>Revocar</Button>
             </div>
           ))}
         </div>
       </Card>
       <Card className="p-4 space-y-2">
-        <div className="font-semibold text-sm">Team Members ({team.length})</div>
+        <div className="font-semibold text-sm">Miembros del Equipo ({team.length})</div>
         {team.map((m) => (
           <div key={m.id} className="flex items-center justify-between text-xs py-1.5 border-b border-[var(--border)] last:border-0">
             <span>{m.full_name} ({m.email})</span>

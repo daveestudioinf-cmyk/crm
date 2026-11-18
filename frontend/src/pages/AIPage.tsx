@@ -51,14 +51,14 @@ export function AIPage() {
     <div className="p-4 md:p-6 space-y-6 max-w-5xl">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold">AI Agents, RAG & Native MCP</h1>
-          <p className="text-xs text-[var(--text-muted)]">Tenant-isolated vector knowledge & 4-trigger human handoff</p>
+          <h1 className="text-xl font-bold">Agentes de IA, RAG y MCP Nativo</h1>
+          <p className="text-xs text-[var(--text-muted)]">Base de conocimiento vectorial aislada por tenant y handoff a humano</p>
         </div>
         {usage && (
           <Card className="px-4 py-2 flex items-center gap-3">
             <Cpu className="w-4 h-4 text-[var(--accent)]" />
             <div className="text-xs">
-              <span className="font-semibold">${(usage.spent_cents / 100).toFixed(2)}</span> / ${(usage.monthly_cap_cents / 100).toFixed(2)} cap ({usage.calls} calls)
+              <span className="font-semibold">${(usage.spent_cents / 100).toFixed(2)}</span> / ${(usage.monthly_cap_cents / 100).toFixed(2)} tope ({usage.calls} llamadas)
             </div>
           </Card>
         )}
@@ -67,7 +67,7 @@ export function AIPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className="p-4 space-y-3">
           <div className="flex items-center gap-2 font-semibold text-sm">
-            <Bot className="w-4 h-4 text-[var(--accent)]" /> Active AI Agents
+            <Bot className="w-4 h-4 text-[var(--accent)]" /> Agentes de IA Activos
           </div>
           {agents.map((a) => (
             <div key={a.id} className="p-3 rounded-xl bg-[var(--surface)] border border-[var(--border)] space-y-1">
@@ -82,30 +82,30 @@ export function AIPage() {
 
         <Card className="p-4 space-y-3">
           <div className="flex items-center gap-2 font-semibold text-sm">
-            <BookOpen className="w-4 h-4 text-[var(--accent)]" /> Add RAG Knowledge Source
+            <BookOpen className="w-4 h-4 text-[var(--accent)]" /> Agregar Conocimiento RAG
           </div>
           <form onSubmit={addKnowledge} className="space-y-2.5">
-            <Input required placeholder="Title (e.g. Shipping & Returns FAQ)" value={kTitle} onChange={(e) => setKTitle(e.target.value)} />
+            <Input required placeholder="Título (ej. Políticas de Envío y Devolución)" value={kTitle} onChange={(e) => setKTitle(e.target.value)} />
             <textarea
               required
               rows={3}
-              placeholder="Paste FAQ or policy text..."
+              placeholder="Pega preguntas frecuentes o políticas..."
               value={kContent}
               onChange={(e) => setKContent(e.target.value)}
               className="w-full rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] p-3 text-sm"
             />
-            <Button type="submit" size="sm">Index Knowledge</Button>
+            <Button type="submit" size="sm">Indexar Conocimiento</Button>
           </form>
         </Card>
       </div>
 
       <Card className="p-4 space-y-3">
         <div className="font-semibold text-sm flex items-center gap-2">
-          <Search className="w-4 h-4 text-[var(--accent)]" /> Test Semantic RAG Retrieval
+          <Search className="w-4 h-4 text-[var(--accent)]" /> Probar Búsqueda Semántica RAG
         </div>
         <form onSubmit={testSearch} className="flex gap-2">
-          <Input placeholder="Ask a customer question..." value={query} onChange={(e) => setQuery(e.target.value)} />
-          <Button type="submit" size="sm">Search</Button>
+          <Input placeholder="Haz una pregunta como cliente..." value={query} onChange={(e) => setQuery(e.target.value)} />
+          <Button type="submit" size="sm">Buscar</Button>
         </form>
         {hits.length > 0 && (
           <div className="space-y-2">
@@ -118,7 +118,7 @@ export function AIPage() {
           </div>
         )}
         <div className="pt-2 space-y-1.5">
-          <div className="text-xs font-semibold text-[var(--text-muted)]">Indexed Sources ({knowledge.length})</div>
+          <div className="text-xs font-semibold text-[var(--text-muted)]">Fuentes Indexadas ({knowledge.length})</div>
           {knowledge.map((k) => (
             <div key={k.id} className="text-xs flex items-center justify-between py-1 border-b border-[var(--border)] last:border-0">
               <span className="font-medium">{k.title}</span>

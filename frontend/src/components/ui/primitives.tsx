@@ -107,7 +107,7 @@ export function Sheet({
         <div className="flex items-center justify-between pb-3 mb-4 border-b border-[var(--border)]">
           <h3 className="text-base font-semibold text-[var(--text)]">{title}</h3>
           <button onClick={onClose} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] px-2 py-1 cursor-pointer">
-            Close
+            Cerrar
           </button>
         </div>
         {children}

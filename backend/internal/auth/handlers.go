@@ -83,34 +83,34 @@ func (h *Handler) Signup(w http.ResponseWriter, r *http.Request) {
 	var salesPipeID string
 	_ = tx.QueryRow(r.Context(), `
 		INSERT INTO crm_pipelines (organization_id, name, pipeline_type, is_default)
-		VALUES ($1, 'Sales Pipeline', 'sales', true) RETURNING id
+		VALUES ($1, 'Embudo de Ventas', 'sales', true) RETURNING id
 	`, orgID).Scan(&salesPipeID)
 	_, _ = tx.Exec(r.Context(), `
 		INSERT INTO crm_stages (organization_id, pipeline_id, name, position, color, is_won, is_lost, requires_human) VALUES
-		($1, $2, 'New Lead', 1000, '#0f766e', false, false, false),
-		($1, $2, 'Qualified', 2000, '#2563eb', false, false, false),
-		($1, $2, 'Proposal', 3000, '#d97706', false, false, true),
-		($1, $2, 'Won', 4000, '#15803d', true, false, false),
-		($1, $2, 'Lost', 5000, '#b91c1c', false, true, false)
+		($1, $2, 'Nuevo Lead', 1000, '#0f766e', false, false, false),
+		($1, $2, 'Calificado', 2000, '#2563eb', false, false, false),
+		($1, $2, 'Propuesta', 3000, '#d97706', false, false, true),
+		($1, $2, 'Ganado', 4000, '#15803d', true, false, false),
+		($1, $2, 'Perdido', 5000, '#b91c1c', false, true, false)
 	`, orgID, salesPipeID)
 
 	// Default Support Pipeline
 	var suppPipeID string
 	_ = tx.QueryRow(r.Context(), `
 		INSERT INTO crm_pipelines (organization_id, name, pipeline_type, vocabulary, is_default)
-		VALUES ($1, 'Support Tickets', 'support', '{"deal":"Ticket","deals":"Tickets","stage":"Status"}', false) RETURNING id
+		VALUES ($1, 'Tickets de Soporte', 'support', '{"deal":"Ticket","deals":"Tickets","stage":"Estado"}', false) RETURNING id
 	`, orgID).Scan(&suppPipeID)
 	_, _ = tx.Exec(r.Context(), `
 		INSERT INTO crm_stages (organization_id, pipeline_id, name, position, color, is_won, is_lost) VALUES
-		($1, $2, 'Open', 1000, '#0f766e', false, false),
-		($1, $2, 'In Progress', 2000, '#2563eb', false, false),
-		($1, $2, 'Resolved', 3000, '#15803d', true, false)
+		($1, $2, 'Abierto', 1000, '#0f766e', false, false),
+		($1, $2, 'En Progreso', 2000, '#2563eb', false, false),
+		($1, $2, 'Resuelto', 3000, '#15803d', true, false)
 	`, orgID, suppPipeID)
 
 	// Default AI Agent & Budget
 	_, _ = tx.Exec(r.Context(), `
 		INSERT INTO ai_agents (organization_id, name, system_prompt)
-		VALUES ($1, 'Sales Assistant', 'You are a helpful WhatsApp sales and support assistant. Be concise, polite, and escalate to a human if unsure.')
+		VALUES ($1, 'Asistente de Ventas', 'Eres un asistente útil de ventas y soporte por WhatsApp. Sé conciso, amable y escala a un humano si tienes dudas.')
 	`, orgID)
 	_, _ = tx.Exec(r.Context(), `INSERT INTO ai_budgets (organization_id) VALUES ($1)`, orgID)
 

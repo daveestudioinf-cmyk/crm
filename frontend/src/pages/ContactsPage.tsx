@@ -54,22 +54,22 @@ export function ContactsPage() {
   return (
     <div className="p-4 md:p-6 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-bold">Contacts (Customer 360°)</h1>
+        <h1 className="text-xl font-bold">Contactos (Customer 360°)</h1>
         <div className="flex gap-2">
           {mergeQueue.length > 0 && (
             <Button size="sm" variant="secondary" onClick={() => setMergeOpen(true)}>
-              <GitMerge className="w-4 h-4" /> Merge Queue ({mergeQueue.length})
+              <GitMerge className="w-4 h-4" /> Cola de Fusión ({mergeQueue.length})
             </Button>
           )}
           <Button size="sm" onClick={() => setNewOpen(true)}>
-            <Plus className="w-4 h-4" /> New Contact
+            <Plus className="w-4 h-4" /> Nuevo Contacto
           </Button>
         </div>
       </div>
 
       <div className="relative max-w-md">
         <Search className="w-4 h-4 absolute left-3 top-3 text-[var(--text-muted)]" />
-        <Input className="pl-9" placeholder="Search name, phone, or email..." value={q} onChange={(e) => setQ(e.target.value)} />
+        <Input className="pl-9" placeholder="Buscar nombre, teléfono o correo..." value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -77,31 +77,31 @@ export function ContactsPage() {
           <Card key={c.id} className="p-4 flex items-center justify-between gap-2">
             <button onClick={() => openDetail(c.id)} className="text-left min-w-0 flex-1 cursor-pointer">
               <div className="font-semibold text-sm truncate">{c.name}</div>
-              <div className="text-xs text-[var(--text-muted)] truncate">{c.phone_number || c.email || 'No contact info'}</div>
-              {c.is_anonymized && <Badge tone="warning" className="mt-1">Anonymized</Badge>}
+              <div className="text-xs text-[var(--text-muted)] truncate">{c.phone_number || c.email || 'Sin datos de contacto'}</div>
+              {c.is_anonymized && <Badge tone="warning" className="mt-1">Anonimizado</Badge>}
             </button>
-            <Button size="sm" variant="secondary" onClick={() => startChat(c.id)} title="Open Inbox Chat">
+            <Button size="sm" variant="secondary" onClick={() => startChat(c.id)} title="Abrir chat en Bandeja">
               <MessageSquare className="w-3.5 h-3.5" />
             </Button>
           </Card>
         ))}
       </div>
 
-      <Sheet open={newOpen} onClose={() => setNewOpen(false)} title="New Contact">
+      <Sheet open={newOpen} onClose={() => setNewOpen(false)} title="Nuevo Contacto">
         <form onSubmit={handleCreate} className="space-y-3">
           <div className="space-y-1">
-            <label className="text-xs font-medium">Name</label>
-            <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Maria Oliveira" />
+            <label className="text-xs font-medium">Nombre</label>
+            <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="María Oliveira" />
           </div>
           <div className="space-y-1">
-            <label className="text-xs font-medium">Phone (E.164)</label>
-            <Input value={form.phone_number} onChange={(e) => setForm({ ...form, phone_number: e.target.value })} placeholder="+5511999998888" />
+            <label className="text-xs font-medium">Teléfono (E.164)</label>
+            <Input value={form.phone_number} onChange={(e) => setForm({ ...form, phone_number: e.target.value })} placeholder="+5215512345678" />
           </div>
           <div className="space-y-1">
-            <label className="text-xs font-medium">Email</label>
-            <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="maria@example.com" />
+            <label className="text-xs font-medium">Correo electrónico</label>
+            <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="maria@ejemplo.com" />
           </div>
-          <Button type="submit" className="w-full">Save Contact</Button>
+          <Button type="submit" className="w-full">Guardar Contacto</Button>
         </form>
       </Sheet>
 
@@ -109,12 +109,12 @@ export function ContactsPage() {
         {selected && (
           <div className="space-y-4">
             <div className="text-xs text-[var(--text-muted)] space-y-1">
-              <div>Phone: {selected.phone_number || '—'}</div>
-              <div>Email: {selected.email || '—'}</div>
-              <div>CPF: {selected.cpf || '—'}</div>
+              <div>Teléfono: {selected.phone_number || '—'}</div>
+              <div>Correo: {selected.email || '—'}</div>
+              <div>Documento/CPF: {selected.cpf || '—'}</div>
             </div>
             <div>
-              <div className="text-xs font-semibold uppercase text-[var(--text-muted)] mb-2">Activity Timeline</div>
+              <div className="text-xs font-semibold uppercase text-[var(--text-muted)] mb-2">Línea de tiempo</div>
               <div className="space-y-2">
                 {(selected.timeline || []).map((t: any) => (
                   <div key={t.id} className="p-2.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-xs">
@@ -128,7 +128,7 @@ export function ContactsPage() {
         )}
       </Sheet>
 
-      <Sheet open={mergeOpen} onClose={() => setMergeOpen(false)} title="Duplicate Merge Queue">
+      <Sheet open={mergeOpen} onClose={() => setMergeOpen(false)} title="Cola de Duplicados">
         <div className="space-y-3">
           {mergeQueue.map((m) => (
             <Card key={m.id} className="p-3 space-y-2">
@@ -136,7 +136,7 @@ export function ContactsPage() {
                 {m.primary_name} ↔ {m.duplicate_name} ({m.reason})
               </div>
               <Button size="sm" onClick={() => handleMerge(m.primary_contact_id, m.duplicate_contact_id)}>
-                Merge into {m.primary_name}
+                Fusionar en {m.primary_name}
               </Button>
             </Card>
           ))}

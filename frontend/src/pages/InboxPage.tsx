@@ -53,7 +53,7 @@ export function InboxPage() {
       });
       es.addEventListener('conversation.updated', () => loadConversations());
     } catch {
-      // Fallback gracefully if EventSource is blocked by preview/sandbox origin
+      // Fallback silencioso si el visor bloquea EventSource
     }
     return () => es?.close();
   }, [selected?.id]);
@@ -100,17 +100,17 @@ export function InboxPage() {
     <div className="space-y-4">
       <div>
         <div className="text-sm font-semibold">{contact360.name}</div>
-        <div className="text-xs text-[var(--text-muted)]">{contact360.phone_number || 'No phone'}</div>
+        <div className="text-xs text-[var(--text-muted)]">{contact360.phone_number || 'Sin teléfono'}</div>
         {contact360.email && <div className="text-xs text-[var(--text-muted)]">{contact360.email}</div>}
       </div>
       <div className="flex flex-wrap gap-1">
         {(contact360.tags || []).map((t: string) => (
           <Badge key={t} tone="accent">{t}</Badge>
         ))}
-        {contact360.is_blocked && <Badge tone="danger">Opted Out (STOP)</Badge>}
+        {contact360.is_blocked && <Badge tone="danger">Baja solicitada (STOP)</Badge>}
       </div>
       <div>
-        <div className="text-xs font-semibold uppercase text-[var(--text-muted)] mb-2">Timeline</div>
+        <div className="text-xs font-semibold uppercase text-[var(--text-muted)] mb-2">Línea de tiempo</div>
         <div className="space-y-2">
           {(contact360.timeline || []).slice(0, 6).map((act: any) => (
             <div key={act.id} className="text-xs p-2 rounded-lg bg-[var(--surface)] border border-[var(--border)]">
@@ -122,24 +122,24 @@ export function InboxPage() {
       </div>
     </div>
   ) : (
-    <div className="text-xs text-[var(--text-muted)]">Select a conversation to view Customer 360°</div>
+    <div className="text-xs text-[var(--text-muted)]">Selecciona una conversación para ver Customer 360°</div>
   );
 
   return (
     <div className="h-[calc(100dvh-3.5rem)] md:h-dvh flex overflow-hidden">
-      {/* Column 1: Conversation List */}
+      {/* Columna 1: Lista de conversaciones */}
       <div className={`${selected ? 'hidden md:flex' : 'flex'} w-full md:w-80 flex-col border-r border-[var(--border)] bg-[var(--bg)]`}>
         <div className="p-3 border-b border-[var(--border)] space-y-2">
           <div className="flex items-center justify-between">
-            <h1 className="font-bold text-base">Inbox</h1>
+            <h1 className="font-bold text-base">Bandeja</h1>
             <span className="text-xs text-[var(--text-muted)]">{conversations.length} chats</span>
           </div>
           <div className="flex gap-1 overflow-x-auto pb-1">
             {[
-              { k: '', l: 'All' },
-              { k: 'pending', l: 'Queue' },
-              { k: 'ai_handling', l: 'AI' },
-              { k: 'claimed', l: 'Mine' },
+              { k: '', l: 'Todos' },
+              { k: 'pending', l: 'Cola' },
+              { k: 'ai_handling', l: 'IA' },
+              { k: 'claimed', l: 'Míos' },
             ].map((tab) => (
               <button
                 key={tab.k}
@@ -156,7 +156,7 @@ export function InboxPage() {
         <div className="flex-1 overflow-y-auto divide-y divide-[var(--border)]">
           {conversations.length === 0 ? (
             <div className="p-6 text-center text-xs text-[var(--text-muted)]">
-              No conversations yet. Create a contact or send a WhatsApp webhook to start.
+              Aún no hay conversaciones. Crea un contacto o conecta WhatsApp para iniciar.
             </div>
           ) : (
             conversations.map((c) => (
@@ -171,14 +171,14 @@ export function InboxPage() {
                   <span className="font-semibold text-sm truncate">{c.contact_name}</span>
                   <Badge tone={statusTone(c.status)}>{c.status}</Badge>
                 </div>
-                <div className="text-xs text-[var(--text-muted)] truncate mt-1">{c.last_message_preview || 'No messages yet'}</div>
+                <div className="text-xs text-[var(--text-muted)] truncate mt-1">{c.last_message_preview || 'Sin mensajes aún'}</div>
               </button>
             ))
           )}
         </div>
       </div>
 
-      {/* Column 2: Chat Thread */}
+      {/* Columna 2: Hilo de chat */}
       <div className={`${selected ? 'flex' : 'hidden md:flex'} flex-1 flex-col bg-[var(--surface)] min-w-0`}>
         {selected ? (
           <>
@@ -187,7 +187,7 @@ export function InboxPage() {
                 <button
                   onClick={() => setSelected(null)}
                   className="md:hidden p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer"
-                  aria-label="Back to list"
+                  aria-label="Volver a la lista"
                 >
                   <ArrowLeft className="w-4 h-4" />
                 </button>
@@ -199,16 +199,16 @@ export function InboxPage() {
               <div className="flex items-center gap-1.5 shrink-0">
                 {selected.status !== 'claimed' && (
                   <Button size="sm" onClick={handleClaim}>
-                    <UserCheck className="w-3.5 h-3.5" /> Claim
+                    <UserCheck className="w-3.5 h-3.5" /> Reclamar
                   </Button>
                 )}
                 {selected.status === 'claimed' && (
                   <>
                     <Button size="sm" variant="secondary" onClick={() => handleResolve('ai_handling')}>
-                      <Bot className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Pass to AI</span>
+                      <Bot className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Pasar a IA</span>
                     </Button>
                     <Button size="sm" variant="secondary" onClick={() => handleResolve('resolved')}>
-                      <CheckCircle2 className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Resolve</span>
+                      <CheckCircle2 className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Resolver</span>
                     </Button>
                   </>
                 )}
@@ -236,7 +236,7 @@ export function InboxPage() {
                     >
                       {m.sender_type === 'ai' && (
                         <div className="flex items-center gap-1 text-[10px] opacity-80 mb-0.5">
-                          <Sparkles className="w-3 h-3" /> AI Assistant
+                          <Sparkles className="w-3 h-3" /> Asistente IA
                         </div>
                       )}
                       <div className="whitespace-pre-wrap break-words">{m.body}</div>
@@ -265,7 +265,7 @@ export function InboxPage() {
               <Input
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
-                placeholder={selected.is_blocked ? 'Contact opted out (STOP)' : 'Type a WhatsApp message...'}
+                placeholder={selected.is_blocked ? 'Contacto dado de baja (STOP)' : 'Escribe un mensaje de WhatsApp...'}
                 disabled={selected.is_blocked}
               />
               <Button type="submit" disabled={selected.is_blocked || !body.trim()}>
@@ -275,18 +275,18 @@ export function InboxPage() {
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-[var(--text-muted)]">
-            Select a conversation to begin
+            Selecciona una conversación para comenzar
           </div>
         )}
       </div>
 
-      {/* Column 3: Desktop Customer 360° */}
+      {/* Columna 3: Customer 360° escritorio */}
       <aside className="hidden lg:block w-80 border-l border-[var(--border)] bg-[var(--bg)] p-4 overflow-y-auto">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-3">Customer 360°</h2>
         {C360Content}
       </aside>
 
-      {/* Mobile Customer 360° Sheet */}
+      {/* Sheet Customer 360° móvil */}
       <Sheet open={sheetOpen} onClose={() => setSheetOpen(false)} title="Customer 360°">
         {C360Content}
       </Sheet>
