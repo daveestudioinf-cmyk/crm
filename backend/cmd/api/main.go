@@ -38,7 +38,7 @@ func main() {
 	defer pool.Close()
 
 	if err := db.RunMigrations(ctx, pool, "migrations"); err != nil {
-		log.Printf("migrations note: %v", err)
+		log.Fatalf("migrations failed: %v", err)
 	}
 
 	var rdb *redis.Client
@@ -56,7 +56,7 @@ func main() {
 	crmH := &crm.Handler{Pool: pool, Hub: hub}
 	inboxH := &inbox.Handler{Pool: pool, Hub: hub, Evolution: evoClient}
 	waH := &whatsapp.Handler{Pool: pool, Hub: hub, RDB: rdb, Evolution: evoClient, PublicAPIURL: cfg.PublicAPIURL}
-	aiH := &ai.Handler{Pool: pool, Hub: hub}
+	aiH := &ai.Handler{Pool: pool, Hub: hub, EncryptionKey: cfg.AIEncryptionKey}
 	autoH := &automation.Handler{Pool: pool}
 	mcpSrv := &mcpserver.Server{Pool: pool}
 
@@ -165,18 +165,37 @@ func main() {
 
 			// Channels (WhatsApp)
 			r.Get("/channels", waH.ListChannels)
-			r.Post("/channels", waH.CreateChannel)
 			r.Get("/channels/{id}/qr", waH.GetQR)
-			r.Post("/channels/{id}/reconnect", waH.ReconnectChannel)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("manager"))
+				r.Post("/channels", waH.CreateChannel)
+				r.Patch("/channels/{id}", waH.UpdateChannel)
+				r.Post("/channels/{id}/reconnect", waH.ReconnectChannel)
+				r.Post("/channels/{id}/disconnect", waH.DisconnectChannel)
+				r.Delete("/channels/{id}", waH.DeleteChannel)
+			})
 
-			// AI Agents, Knowledge (RAG) & Usage
+			// AI Agents, Providers, Budgets, Runs, Knowledge (RAG) & Memory
 			r.Get("/ai/agents", aiH.ListAgents)
-			r.Post("/ai/agents", aiH.CreateAgent)
-			r.Get("/ai/knowledge", aiH.ListKnowledge)
-			r.Post("/ai/knowledge", aiH.CreateKnowledge)
-			r.Delete("/ai/knowledge/{id}", aiH.DeleteKnowledge)
-			r.Post("/ai/knowledge/search", aiH.SearchKnowledge)
+			r.Get("/ai/providers", aiH.ListProviders)
+			r.Get("/ai/budget", aiH.GetBudget)
 			r.Get("/ai/usage", aiH.GetUsage)
+			r.Get("/ai/runs", aiH.ListRuns)
+			r.Get("/ai/memory", aiH.ListMemory)
+			r.Get("/ai/knowledge", aiH.ListKnowledge)
+			r.Post("/ai/knowledge/search", aiH.SearchKnowledge)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("manager"))
+				r.Post("/ai/agents", aiH.CreateAgent)
+				r.Patch("/ai/agents/{id}", aiH.UpdateAgent)
+				r.Post("/ai/providers", aiH.UpsertProvider)
+				r.Delete("/ai/providers/{id}", aiH.DeleteProvider)
+				r.Put("/ai/budget", aiH.UpdateBudget)
+				r.Post("/ai/memory", aiH.CreateMemory)
+				r.Delete("/ai/memory/{id}", aiH.DeleteMemory)
+				r.Post("/ai/knowledge", aiH.CreateKnowledge)
+				r.Delete("/ai/knowledge/{id}", aiH.DeleteKnowledge)
+			})
 
 			// Webhooks, Automations, LGPD, Team, Audit, Metrics
 			r.Get("/webhooks/sources", autoH.ListWebhookSources)

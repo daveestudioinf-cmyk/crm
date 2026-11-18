@@ -15,23 +15,26 @@ type Config struct {
 	EvolutionAPIKey string
 	PublicAPIURL    string
 	OpenAIKey       string
+	AIEncryptionKey string
 	MinioEndpoint   string
 	MinioBucket     string
 	SecureCookies   bool
 }
 
 func Load() Config {
+	jwtSecret := getEnv("JWT_SECRET", "dev-secret-change-in-production-32bytes!")
 	return Config{
 		Port:            getEnv("PORT", "8080"),
 		DatabaseURL:     getEnv("DATABASE_URL", "postgres://postgres@127.0.0.1:5432/crm_dev?sslmode=disable"),
 		RedisURL:        getEnv("REDIS_URL", ""),
-		JWTSecret:       getEnv("JWT_SECRET", "dev-secret-change-in-production-32bytes!"),
+		JWTSecret:       jwtSecret,
 		FrontendOrigin:  getEnv("FRONTEND_ORIGIN", "http://localhost:5173"),
 		WAHAUrl:         getEnv("WAHA_URL", ""),
 		EvolutionURL:    getEnv("EVOLUTION_API_URL", ""),
 		EvolutionAPIKey: getEnv("EVOLUTION_API_KEY", ""),
 		PublicAPIURL:    getEnv("PUBLIC_API_URL", "http://api:8080"),
 		OpenAIKey:       getEnv("OPENAI_API_KEY", ""),
+		AIEncryptionKey: getEnv("AI_ENCRYPTION_KEY", jwtSecret),
 		MinioEndpoint:   getEnv("MINIO_ENDPOINT", ""),
 		MinioBucket:     getEnv("MINIO_BUCKET", "crm-media"),
 		SecureCookies:   getEnv("SECURE_COOKIES", "false") == "true",

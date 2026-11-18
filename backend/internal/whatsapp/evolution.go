@@ -27,12 +27,15 @@ func NewEvolutionClient(baseURL, apiKey string) *EvolutionClient {
 	}
 }
 
-func (c *EvolutionClient) do(ctx context.Context, method, path string, body any, out any) error {
+func (c *EvolutionClient) do(ctx context.Context, method, path string, body any, out any) (int, error) {
+	if c == nil {
+		return 0, nil
+	}
 	var rdr *bytes.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		rdr = bytes.NewReader(b)
 	} else {
@@ -40,7 +43,7 @@ func (c *EvolutionClient) do(ctx context.Context, method, path string, body any,
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rdr)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.APIKey != "" {
@@ -48,29 +51,36 @@ func (c *EvolutionClient) do(ctx context.Context, method, path string, body any,
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("evolution status %d", resp.StatusCode)
+		return resp.StatusCode, fmt.Errorf("evolution status %d", resp.StatusCode)
 	}
 	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
+		return resp.StatusCode, json.NewDecoder(resp.Body).Decode(out)
 	}
-	return nil
+	return resp.StatusCode, nil
 }
 
-func (c *EvolutionClient) CreateInstance(ctx context.Context, instanceName, webhookURL string) error {
+func (c *EvolutionClient) CreateInstance(ctx context.Context, instanceName, webhookURL, webhookSecret string) error {
+	wh := map[string]any{
+		"url":      webhookURL,
+		"byEvents": false,
+		"events":   []string{"MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED"},
+	}
+	if webhookSecret != "" {
+		wh["headers"] = map[string]string{
+			"X-Webhook-Secret": webhookSecret,
+		}
+	}
 	payload := map[string]any{
 		"instanceName": instanceName,
 		"qrcode":       true,
-		"webhook": map[string]any{
-			"url":      webhookURL,
-			"byEvents": false,
-			"events":   []string{"MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED"},
-		},
+		"webhook":      wh,
 	}
-	return c.do(ctx, http.MethodPost, "/instance/create", payload, nil)
+	_, err := c.do(ctx, http.MethodPost, "/instance/create", payload, nil)
+	return err
 }
 
 func (c *EvolutionClient) ConnectQR(ctx context.Context, instanceName string) (base64QR string, code string, err error) {
@@ -82,7 +92,7 @@ func (c *EvolutionClient) ConnectQR(ctx context.Context, instanceName string) (b
 			Code   string `json:"code"`
 		} `json:"qrcode"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/instance/connect/"+instanceName, nil, &res); err != nil {
+	if _, err := c.do(ctx, http.MethodGet, "/instance/connect/"+instanceName, nil, &res); err != nil {
 		return "", "", err
 	}
 	b64 := res.Base64
@@ -96,11 +106,37 @@ func (c *EvolutionClient) ConnectQR(ctx context.Context, instanceName string) (b
 	return b64, cd, nil
 }
 
+func (c *EvolutionClient) LogoutInstance(ctx context.Context, instanceName string) error {
+	if c == nil {
+		return nil
+	}
+	status, err := c.do(ctx, http.MethodDelete, "/instance/logout/"+instanceName, nil, nil)
+	if status == http.StatusNotFound {
+		return nil
+	}
+	return err
+}
+
+func (c *EvolutionClient) DeleteInstance(ctx context.Context, instanceName string) error {
+	if c == nil {
+		return nil
+	}
+	status, err := c.do(ctx, http.MethodDelete, "/instance/delete/"+instanceName, nil, nil)
+	if status == http.StatusNotFound {
+		return nil
+	}
+	return err
+}
+
 func (c *EvolutionClient) SendText(ctx context.Context, instanceName, phoneNumber, text string) error {
+	if c == nil {
+		return nil
+	}
 	cleanPhone := strings.TrimPrefix(strings.TrimSpace(phoneNumber), "+")
 	payload := map[string]any{
 		"number": cleanPhone,
 		"text":   text,
 	}
-	return c.do(ctx, http.MethodPost, "/message/sendText/"+instanceName, payload, nil)
+	_, err := c.do(ctx, http.MethodPost, "/message/sendText/"+instanceName, payload, nil)
+	return err
 }

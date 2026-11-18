@@ -217,3 +217,135 @@ export function endAdminSupportSession(id: string): Promise<{ status: string; id
     method: 'POST',
   });
 }
+
+export interface AIAgent {
+  id: string;
+  name: string;
+  system_prompt: string;
+  provider: string;
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  handoff_enabled: boolean;
+  is_active: boolean;
+  version: number;
+  updated_at?: string;
+}
+
+export interface AIProviderCredential {
+  id: string;
+  provider: string;
+  label: string;
+  base_url: string;
+  default_model: string;
+  api_key_mask: string;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AIBudget {
+  monthly_limit_cents: number;
+  monthly_cap_cents: number;
+  spent_cents: number;
+  warn_at_percent: number;
+  hard_stop: boolean;
+  alert_80_sent: boolean;
+  calls?: number;
+  pct: number;
+}
+
+export interface AIAgentRun {
+  id: string;
+  agent_id?: string | null;
+  conversation_id?: string | null;
+  status: 'completed' | 'handoff' | 'blocked_budget' | 'failed';
+  provider: string;
+  model: string;
+  input_preview: string;
+  output_preview: string;
+  handoff_reason?: string;
+  error_message?: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_cents: number;
+  latency_ms: number;
+  created_at: string;
+}
+
+export interface OrgMemoryEntry {
+  id: string;
+  category: string;
+  content: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface ChannelSession {
+  id: string;
+  session_name: string;
+  provider: string;
+  engine: string;
+  phone_number: string;
+  status: 'STARTING' | 'SCAN_QR_CODE' | 'WORKING' | 'STOPPED' | 'FAILED';
+  warmup_daily_limit: number;
+  created_at: string;
+}
+
+export function subscribeSSE(onEvent: (eventType: string, data: any) => void): () => void {
+  const controller = new AbortController();
+
+  async function connect() {
+    const token = getToken();
+    if (!token) return;
+    const headers = new Headers();
+    headers.set('Authorization', `Bearer ${token}`);
+    const support = getSupportSession();
+    if (support?.id) {
+      headers.set('X-Support-Session-ID', support.id);
+    }
+
+    try {
+      const res = await fetch('/api/v1/realtime/stream', {
+        headers,
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) return;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let currentEvent = 'message';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const rawLine of lines) {
+          const line = rawLine.trimEnd();
+          if (line === '') {
+            currentEvent = 'message';
+            continue;
+          }
+          if (line.startsWith(':')) continue;
+          if (line.startsWith('event:')) {
+            currentEvent = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            const payloadStr = line.slice(5).trim();
+            try {
+              onEvent(currentEvent, JSON.parse(payloadStr));
+            } catch {
+              onEvent(currentEvent, payloadStr);
+            }
+          }
+        }
+      }
+    } catch {
+      // Aborted or network disconnected
+    }
+  }
+
+  connect();
+  return () => controller.abort();
+}

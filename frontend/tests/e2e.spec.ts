@@ -49,7 +49,7 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
 
   // 5. Embudo Kanban y cero scroll horizontal
   await page.goto('/app/kanban');
-  await page.getByRole('button', { name: /Nuevo / }).click();
+  await page.getByRole('button', { name: /Nuevo / }).first().click();
   await page.getByPlaceholder('Plan Empresarial').fill('Trato Anual');
   await page.locator('select').selectOption({ index: 1 });
   await page.getByRole('button', { name: 'Crear', exact: true }).click();
@@ -71,6 +71,43 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
   await page.getByPlaceholder('Haz una pregunta como cliente...').fill('envíos paquetería exprés');
   await page.getByRole('button', { name: 'Buscar' }).click();
   await expect(page.getByText(/48 horas/)).toBeVisible();
+
+  // 6b. Bloque 2: Agente IA, Proveedores LLM (máscara), Presupuesto, Trazas y Canales WhatsApp (S22)
+  await page.getByRole('tab', { name: 'Agente IA' }).click();
+  await page.getByPlaceholder('Asesor Comercial').fill('Asesor E2E');
+  await page.getByRole('button', { name: 'Guardar Agente' }).click();
+  await expect(page.getByRole('status')).toContainText(/Agente IA/);
+
+  await page.getByRole('tab', { name: 'Proveedores LLM' }).click();
+  await page.getByPlaceholder('API Key (sk-... / AIza...)').fill('sk-test-e2e-99998888');
+  await page.getByRole('button', { name: 'Guardar Credencial Cifrada' }).click();
+  await expect(page.getByText('sk-••••8888')).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Presupuesto' }).click();
+  await page.getByRole('button', { name: 'Guardar Presupuesto' }).click();
+  await expect(page.getByRole('status')).toContainText(/Presupuesto mensual actualizado/);
+
+  await page.getByRole('tab', { name: 'Trazas y Memoria' }).click();
+  await page.getByPlaceholder('Regla o dato persistente (ej. Horario L-V 9am a 6pm)').fill('Horario L-V 9:00 a 18:00');
+  await page.getByRole('button', { name: 'Agregar Memoria' }).click();
+  await expect(page.getByText('Horario L-V 9:00 a 18:00')).toBeVisible();
+
+  const aiOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  expect(aiOverflow).toBe(false);
+
+  // Canales WhatsApp (S22)
+  await page.goto('/app/channels');
+  await page.getByPlaceholder('Nombre de sesión (ej. ventas-principal)').fill('ventas-e2e');
+  await page.getByRole('button', { name: 'Conectar Número' }).click();
+  await expect(page.getByText(/QR listo/)).toBeVisible();
+  await page.getByRole('button', { name: 'Cerrar', exact: true }).click();
+  await page.getByRole('button', { name: 'Guardar límite' }).first().click();
+  await expect(page.getByText('Límite diario de calentamiento actualizado.')).toBeVisible();
+  await page.getByRole('button', { name: 'Reconectar' }).first().click();
+  await expect(page.getByText('WORKING').first()).toBeVisible();
+
+  const channelsOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  expect(channelsOverflow).toBe(false);
 
   // 7. Consola Super-Admin (S26), Suspensión y Sesión de Soporte TTL 1h
   execFileSync('psql', [

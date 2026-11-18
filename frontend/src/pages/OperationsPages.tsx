@@ -1,30 +1,99 @@
 import React, { useEffect, useState } from 'react';
-import { apiFetch } from '../lib/api';
+import { type ChannelSession, apiFetch, subscribeSSE } from '../lib/api';
 import { Badge, Button, Card, Input } from '../components/ui/primitives';
 
 export function ChannelsPage() {
-  const [channels, setChannels] = useState<any[]>([]);
+  const [channels, setChannels] = useState<ChannelSession[]>([]);
   const [sessionName, setSessionName] = useState('');
   const [provider, setProvider] = useState('evolution_go');
-  const [qr, setQr] = useState<{ base64?: string; payload?: string }>({});
+  const [qr, setQr] = useState<{ id?: string; session?: string; base64?: string; payload?: string } | null>(null);
+  const [warmupDrafts, setWarmupDrafts] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const load = () => apiFetch('/channels').then(setChannels);
-  useEffect(() => { load(); }, []);
+  const load = async () => {
+    const list = await apiFetch<ChannelSession[]>('/channels');
+    setChannels(list || []);
+    const drafts: Record<string, string> = {};
+    for (const ch of list || []) {
+      drafts[ch.id] = String(ch.warmup_daily_limit ?? 100);
+    }
+    setWarmupDrafts(drafts);
+  };
+
+  useEffect(() => {
+    load();
+    const unsub = subscribeSSE((evType) => {
+      if (evType === 'channel.updated' || evType === 'channel.deleted') {
+        load();
+      }
+    });
+    return unsub;
+  }, []);
+
+  async function openQR(chId: string, sname: string) {
+    const q = await apiFetch(`/channels/${chId}/qr`);
+    setQr({ id: chId, session: sname, base64: q.qr_base64, payload: q.qr_payload });
+  }
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
-    const res = await apiFetch('/channels', { method: 'POST', body: JSON.stringify({ session_name: sessionName, provider }) });
+    setNotice(null);
+    const res = await apiFetch('/channels', {
+      method: 'POST',
+      body: JSON.stringify({ session_name: sessionName, provider }),
+    });
     setSessionName('');
+    await load();
+    await openQR(res.id, res.session_name);
+  }
+
+  async function saveWarmup(chId: string) {
+    const limit = parseInt(warmupDrafts[chId] || '100', 10);
+    await apiFetch(`/channels/${chId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ warmup_daily_limit: limit }),
+    });
+    setNotice('Límite diario de calentamiento actualizado.');
     load();
-    const q = await apiFetch(`/channels/${res.id}/qr`);
-    setQr({ base64: q.qr_base64, payload: q.qr_payload });
+  }
+
+  function healthDotClass(status: string) {
+    switch (status) {
+      case 'WORKING':
+        return 'bg-emerald-500';
+      case 'SCAN_QR_CODE':
+      case 'STARTING':
+        return 'bg-amber-500';
+      case 'FAILED':
+        return 'bg-red-500';
+      default:
+        return 'bg-slate-400';
+    }
   }
 
   return (
-    <div className="p-4 md:p-6 space-y-4 max-w-4xl">
-      <h1 className="text-xl font-bold">Canales de WhatsApp (Evolution Go / WAHA)</h1>
+    <div className="p-4 md:p-6 space-y-4 max-w-4xl min-w-0">
+      <div>
+        <h1 className="text-xl font-bold">Canales de WhatsApp (Evolution Go / WAHA)</h1>
+        <p className="text-xs text-[var(--text-muted)]">
+          Conexión multi-tenant por código QR, control anti-ban diario y estado en tiempo real
+        </p>
+      </div>
+
+      {notice && (
+        <div className="px-3 py-2 rounded-xl text-xs bg-emerald-50 border border-emerald-200 text-emerald-800">
+          {notice}
+        </div>
+      )}
+
       <form onSubmit={create} className="flex flex-wrap gap-2 max-w-xl">
-        <Input required className="flex-1 min-w-[180px]" placeholder="Nombre de sesión (ej. ventas-principal)" value={sessionName} onChange={(e) => setSessionName(e.target.value)} />
+        <Input
+          required
+          className="flex-1 min-w-[180px]"
+          placeholder="Nombre de sesión (ej. ventas-principal)"
+          value={sessionName}
+          onChange={(e) => setSessionName(e.target.value)}
+        />
         <select
           value={provider}
           onChange={(e) => setProvider(e.target.value)}
@@ -35,27 +104,83 @@ export function ChannelsPage() {
         </select>
         <Button type="submit">Conectar Número</Button>
       </form>
-      {(qr.base64 || qr.payload) && (
-        <Card className="p-4 bg-teal-50 border-teal-200 text-xs space-y-2">
-          <div className="font-semibold">QR listo — Escanea con WhatsApp:</div>
-          {qr.base64 && <img src={qr.base64.startsWith('data:') ? qr.base64 : `data:image/png;base64,${qr.base64}`} alt="QR WhatsApp" className="w-48 h-48 rounded-lg border bg-white p-2" />}
-          {qr.payload && <code className="block break-all">{qr.payload}</code>}
-        </Card>
-      )}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {channels.map((ch) => (
-          <Card key={ch.id} className="p-4 flex items-center justify-between">
-            <div>
-              <div className="font-semibold text-sm">{ch.session_name}</div>
-              <div className="text-xs text-[var(--text-muted)]">{ch.provider} • {ch.engine} • {ch.warmup_daily_limit}/día</div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge tone={ch.status === 'WORKING' ? 'success' : 'warning'}>{ch.status}</Badge>
-              {ch.status !== 'WORKING' && (
-                <Button size="sm" variant="secondary" onClick={() => apiFetch(`/channels/${ch.id}/reconnect`, { method: 'POST' }).then(load)}>
-                  Activar
+
+      {qr && (qr.base64 || qr.payload) && (
+        <Card className="p-4 bg-teal-50 border-teal-200 text-xs space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="font-semibold">QR listo ({qr.session}) — Escanea con WhatsApp:</div>
+            <div className="flex gap-2">
+              {qr.id && (
+                <Button size="sm" variant="secondary" onClick={() => openQR(qr.id!, qr.session || '')}>
+                  Refrescar QR
                 </Button>
               )}
+              <Button size="sm" variant="secondary" onClick={() => setQr(null)}>
+                Cerrar
+              </Button>
+            </div>
+          </div>
+          {qr.base64 && (
+            <img
+              src={qr.base64.startsWith('data:') ? qr.base64 : `data:image/png;base64,${qr.base64}`}
+              alt="QR WhatsApp"
+              className="w-48 h-48 rounded-lg border bg-white p-2"
+            />
+          )}
+          {qr.payload && <code className="block break-all text-[11px]">{qr.payload}</code>}
+        </Card>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {channels.map((ch) => (
+          <Card key={ch.id} className="p-4 space-y-3 min-w-0">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-semibold text-sm flex items-center gap-2">
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${healthDotClass(ch.status)}`} aria-label={`Salud ${ch.status}`} />
+                  <span className="truncate">{ch.session_name}</span>
+                </div>
+                <div className="text-xs text-[var(--text-muted)]">
+                  {ch.provider} • {ch.engine} {ch.phone_number ? `• ${ch.phone_number}` : ''}
+                </div>
+              </div>
+              <Badge tone={ch.status === 'WORKING' ? 'success' : ch.status === 'FAILED' ? 'danger' : 'warning'}>
+                {ch.status}
+              </Badge>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs text-[var(--text-muted)]">Límite diario:</label>
+              <Input
+                type="number"
+                min="1"
+                max="5000"
+                className="w-24 h-8 text-xs"
+                value={warmupDrafts[ch.id] ?? String(ch.warmup_daily_limit)}
+                onChange={(e) => setWarmupDrafts((prev) => ({ ...prev, [ch.id]: e.target.value }))}
+              />
+              <Button size="sm" variant="secondary" onClick={() => saveWarmup(ch.id)}>
+                Guardar límite
+              </Button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="secondary" onClick={() => openQR(ch.id, ch.session_name)}>
+                Ver QR
+              </Button>
+              {ch.status !== 'WORKING' && (
+                <Button size="sm" variant="secondary" onClick={() => apiFetch(`/channels/${ch.id}/reconnect`, { method: 'POST' }).then(load)}>
+                  Reconectar
+                </Button>
+              )}
+              {ch.status === 'WORKING' && (
+                <Button size="sm" variant="secondary" onClick={() => apiFetch(`/channels/${ch.id}/disconnect`, { method: 'POST' }).then(load)}>
+                  Desconectar
+                </Button>
+              )}
+              <Button size="sm" variant="secondary" onClick={() => apiFetch(`/channels/${ch.id}`, { method: 'DELETE' }).then(load)}>
+                Eliminar
+              </Button>
             </div>
           </Card>
         ))}

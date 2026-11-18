@@ -1,65 +1,53 @@
-# Motor LLM Real por Tenant (S17/S19) y Consola Super-Admin (S26) en KoraCRM
+# Bloque 2: Motor LLM Real por Tenant (S17/S19), Presupuestos/Trazas de IA y Canal WhatsApp Evolution Go (S22)
 
 * **Author:** daveestudioinf-cmyk
 * **Date:** 2026-11-18
 
 ## Overview
 
-Incorporar a KoraCRM dos capacidades faltantes respecto al mapa original de DeskcommCRM ([`recon-map.md`](file:///home/antigravity/crm-go/replica/recon-map.md)):
-1. **Motor LLM real por tenant (S17 / S19):** permitir que cada organización configure sus propias credenciales de proveedor LLM cifradas (`ai_provider_credentials`), ejecute turnos reales de IA con contexto RAG, respete un presupuesto mensual en `ai_budgets` (alerta al 80% y bloqueo con traspaso humano al 100%) y envíe las respuestas por WhatsApp vía Evolution Go.
-2. **Consola Super-Admin de plataforma (S26 `/admin/*`):** directorio de tenants, suspensión/reactivación de organizaciones (`is_suspended`), KPIs globales de uso y sesiones temporales de soporte con TTL máximo de 1 hora auditadas en `api_audit_log`.
-
-Todo se mantiene desacoplado entre el backend en Go, la PWA en React y el servidor MCP (`cmd/mcp` y `/api/v1/mcp`), sin exponer lógica `/admin/*` ni secretos LLM a través de MCP.
+Habilitar el motor de IA real multi-tenant de KoraCRM (`S17`/`S19`/`F03`) junto con el ciclo completo de conexión y eventos en tiempo real de WhatsApp vía Evolution Go (`S22`/`F02`). Cada organización podrá configurar sus propias credenciales de proveedor LLM cifradas en reposo (OpenAI, Anthropic, Gemini, OpenRouter o endpoint compatible OpenAI), definir un presupuesto mensual con alerta al 80% y corte duro (`hard_stop`) al 100%, ejecutar turnos de agente con contexto RAG + memoria organizacional + catálogo de productos + trazabilidad completa (`ai_agent_runs` y `ai_invocations`), y despachar respuestas salientes por Evolution Go respetando el límite anti-ban (`AllowOutbound`).
 
 ## Analysis
 
-Los 5 revisores Goldfish detectaron 7 riesgos principales sobre el código actual en `/home/antigravity/crm-go`:
+### Contradicciones y Riesgos Identificados
 
-1. **Credenciales LLM por tenant inexistentes y riesgo de cifrado (`ai_provider_credentials`):**
-   * La tabla `ai_provider_credentials` no existe en `000001_init_schema.up.sql` y `config.Config` no tiene clave maestra de cifrado.
-   * Usar `JWT_SECRET` para cifrar API keys rompería las credenciales al rotar sesiones. Se requiere una clave dedicada `AI_CREDENTIALS_MASTER_KEY` (AES-256-GCM con `nonce` único, `key_version` y `organization_id` como AAD), sin devolver nunca el secreto en respuestas HTTP ni en sesiones de soporte `support_readonly`.
-2. **Condiciones de carrera y pérdida de precisión en `ai_budgets` (80% / 100%):**
-   * Hoy `RunAgentTurn` no consulta `ai_budgets`, fija `cost_cents = 1` y `ai_budgets` no tiene periodo mensual (`period_month`) ni `alert_100_sent`.
-   * En modelos económicos (por ejemplo `gpt-4o-mini`), redondear por turno a `int` trunca a `0` o sobrestima el gasto; además, `SUM()` por turno degrada y permite carreras TOCTOU entre webhooks paralelos.
-   * Solución: guardar precisión en `cost_microcents` (`bigint`) en `ai_invocations`, añadir `period_month` + `spent_microcents` + `reserved_microcents` + `alert_100_sent` en `ai_budgets`, hacer reserva atómica O(1) antes de llamar al LLM y conciliar al terminar.
-3. **Desconexión entre `cmd/worker`, `ai.RunAgentTurn` y `EvolutionClient`:**
-   * `cmd/worker/main.go` procesa hasta 10 eventos cada 2s en bucle secuencial, sin `EvolutionClient`, sin `RDB` (Redis) y marcando `event_log.status = 'done'` aunque falle el turno.
-   * Una llamada LLM lenta (5–20s) bloquea a todos los tenants; ráfagas del mismo contacto generan respuestas múltiples; y un reintento tras `SendText` puede duplicar mensajes en WhatsApp.
-   * Solución: pool acotado de workers con serialización/coalescing por `conversation_id`, timeout por turno (20–25s), outbox idempotente en `messages` (`sending` -> `sent`/`failed`), chequeo optimista de `conversations.status == 'ai_handling'` y `service_revision` antes de enviar, y respeto estricto de `AllowOutbound` (`warmup_daily_limit`).
-4. **Falta de enforcement en runtime para `is_suspended` y `platform_support_sessions`:**
-   * Aunque el esquema ya tiene `organizations.is_suspended`, `users.is_platform_admin`, `platform_support_sessions` y `api_audit_log.support_session_id`, `auth.Middleware.RequireAuth` y `auth.WriteAudit` no los validan ni los propagan.
-   * Un tenant suspendido sigue operando por JWT, `api_tokens`, `/api/v1/mcp`, `cmd/mcp` y webhooks de WhatsApp.
-   * Solución: middleware dedicado `RequirePlatformAdmin` (verificado en BD), bloqueo `403 tenant_suspended` en `RequireAuth` / `cmd/mcp` / `cmd/worker`, validación explícita de `X-Support-Session-ID` (`expires_at > now()`, `ended_at IS NULL`, máx. 1h), bloqueo de mutaciones cuando `mode = 'support_readonly'` y propagación de `support_session_id` + `ip_address` a `api_audit_log`.
-5. **Desacoplamiento y no-duplicación entre Inbox, Worker y MCP:**
-   * `mcpserver.callTool("send_message")` hoy solo inserta en `messages` sin despachar por WhatsApp. Si el motor LLM y MCP duplican clientes Evolution, se pierde el throttle anti-ban.
-   * Solución: extraer un servicio/función única de envío outbound WhatsApp (con `AllowOutbound` + `EvolutionClient`) usada por Inbox, Worker y MCP, manteniendo `internal/mcpserver` sin dependencias hacia el motor LLM.
-6. **Presupuesto de contexto RAG y versionado de embeddings:**
-   * `SearchRAG` lee hasta 500 `ai_chunks` con hash de 64 dimensiones; sin límite de historial/tokens el costo crece sin control. Limitar ventana de mensajes y top-K chunks, y versionar `embedding_model` para futuras migraciones a embeddings vectoriales reales.
-7. **Observabilidad, rollouts y fallos silenciosos:**
-   * `RunAgentTurn` y `EvolutionClient.do` descartan errores hoy. Se requiere propagar `trace_id` desde `event_log` hacia `ai_invocations`, registrar `latency_ms` y categorías de error (`auth`, `rate_limit`, `upstream`, `budget`), y mantener un interruptor `AI_ENGINE_MODE=stub|llm` para rollback inmediato.
+1. **Seguridad de credenciales LLM vs. usabilidad:** Almacenar API keys de múltiples tenants exige cifrado autenticado en reposo (`AES-256-GCM`) con clave derivada de variable de entorno (`AI_ENCRYPTION_KEY`, con fallback seguro en dev/test) y nunca devolver el secreto en `GET` (solo máscara tipo `sk-••••1234`).
+2. **Desacople de esquema existente (`000001_init_schema.up.sql`) vs. alcance Bloque 2:**
+   - `ai_agents` existe, pero carece de `temperature` y `handoff_enabled` / `max_tokens`.
+   - `ai_budgets` existe con `monthly_cap_cents` y `alert_80_sent`, pero faltan `spent_cents`, `warn_at_percent` y `hard_stop` (y la vista espera `monthly_limit_cents` o compatibilidad con ambos nombres).
+   - `ai_provider_credentials`, `ai_agent_runs` y `org_memory_entries` no existen en `000001_init_schema.up.sql`.
+   - `db.RunMigrations` actualmente solo ejecuta `000001_init_schema.up.sql` si no existe `organizations`, por lo que ignoraría `000002_bloque2_ai_evolution.up.sql`. Debe actualizarse para registrar y aplicar migraciones pendientes en orden.
+3. **Presupuesto atómico y concurrencia en `worker`:** Si dos mensajes llegan simultáneamente para el mismo tenant cerca del 100% del presupuesto, una lectura sin bloqueo podría exceder `monthly_limit_cents`. El incremento de `ai_budgets.spent_cents` y la verificación de `hard_stop` deben ejecutarse en PostgreSQL de forma atómica (`UPDATE ... RETURNING` o transacción).
+4. **Handoff y envío WhatsApp en `RunAgentTurn`:** `cmd/worker/main.go` actualmente invoca `ai.RunAgentTurn(ctx, pool, hub, orgID, p.ConversationID, p.Body)` sin acceso a `EvolutionClient` ni `RDB` para `AllowOutbound`. Además, cuando `RunAgentTurn` dispara handoff (solicitud de humano, tema crítico, presupuesto agotado, error de proveedor o etapa `crm_stages.requires_human = true`), debe transicionar la conversación a `pending`, registrar la traza en `ai_agent_runs`/`ai_invocations` y publicar `conversation.handoff` por SSE.
+5. **Determinismo en tests / sin API key externa:** En entornos locales o CI/E2E donde el tenant no configuró API key externa (o usa proveedor `internal` / `mock`), el motor debe usar un fallback determinista local sin fallar, mientras que con API key configurada ejecuta el cliente HTTP real (con `base_url` configurable para pruebas con `httptest.Server`).
+6. **Preservación de garantías del Bloque 1:** Todos los endpoints nuevos en `/api/v1/ai/*` y `/api/v1/channels/*` heredan `RequireTenantAccess` (bloqueo `403 tenant_suspended` y `403 support_readonly` en mutaciones), y `cmd/worker` sigue omitiendo tenants suspendidos antes de ejecutar `ai.RunAgentTurn`.
 
 ## Goals vs. Non-Goals
 
 * **In-Scope Goals:**
-  * Migración SQL aditiva para `ai_provider_credentials`, campos de precisión/periodo en `ai_budgets` / `ai_invocations` y columnas de reintento/error en `event_log`.
-  * Cifrado AES-256-GCM de credenciales LLM por tenant con `AI_CREDENTIALS_MASTER_KEY` y enmascaramiento en API.
-  * Cliente HTTP LLM multi-proveedor en Go (OpenAI-compatible / OpenRouter / Gemini / Anthropic), cálculo de costos por tabla de tarifas, control de presupuesto 80%/100% y respuesta por Evolution Go con outbox idempotente y worker pool.
-  * Endpoints `/api/v1/admin/*` (`RequirePlatformAdmin`), enforcement de `is_suspended` (API, Worker y MCP) y sesiones de soporte auditadas de 1h (`support_readonly` por defecto).
-  * Vistas en español en el frontend PWA: `/app/ai/providers` + `/app/ai/usage` (`S19`), editor de agentes (`S17`) y `/admin` (`S26`) con `ActiveSupportSessionBanner`.
+  * Migración `000002_bloque2_ai_evolution.up.sql` + `db.RunMigrations` versionado (`schema_migrations`).
+  * Cifrado `AES-256-GCM` para `ai_provider_credentials` con CRUD en `/api/v1/ai/providers` (sin exponer secretos en `GET`).
+  * Gestión de presupuesto mensual en `/api/v1/ai/budget` y `/api/v1/ai/usage` (`monthly_limit_cents`, `spent_cents`, `warn_at_percent`, `hard_stop`, `alert_80_sent`).
+  * CRUD completo de `ai_agents` (`GET`, `POST`, `PATCH`) y `org_memory_entries` (`GET`, `POST`, `DELETE`) + visor de trazas (`/api/v1/ai/runs`).
+  * Motor `ai.RunAgentTurn` con cliente HTTP real (OpenAI Chat Completions / Anthropic / Gemini / OpenRouter), inyección de RAG + memoria + catálogo, fallback local determinista, trazabilidad en `ai_agent_runs` + `ai_invocations`, incremento atómico de presupuesto, handoff automático y despacho saliente por `EvolutionClient.SendText` con `AllowOutbound`.
+  * Ciclo completo WhatsApp Evolution Go en `/api/v1/channels` (crear con prefijo de tenant, QR, reconectar, actualizar `warmup_daily_limit`, desconectar/eliminar, y `EvolutionWebhook` publicando eventos SSE `channel.updated`).
+  * UI en español en `AIPage.tsx` (`S17`/`S19`) y `OperationsPages.tsx` (`ChannelsPage` `S22`) sin scroll horizontal en Desktop (`1280x800`) y Mobile (`390x844`).
 * **Out-of-Scope Non-Goals:**
-  * Configurar un LLM único centralizado desde Super-Admin oculto al cliente (descartado por decisión del usuario para mantener el modelo por tenant de DeskcommCRM).
-  * Exponer herramientas de administración `/admin/*` o lectura de credenciales LLM dentro del servidor MCP.
-  * Reemplazar el sistema de embeddings hash 64-dim actual por llamadas externas de embedding en esta misma iteración (solo se versiona `embedding_model`).
+  * Streaming token-a-token por SSE hacia el cliente final (las respuestas se envían como mensajes completos de WhatsApp).
+  * Ejecución autónoma de herramientas MCP desde `RunAgentTurn` (corresponde a un bloque posterior de tool-calling avanzado).
+  * Soporte de Meta Cloud API oficial o envío de audio/imágenes multimedia salientes (solo texto en Bloque 2).
 
 ## Alternatives Weighed
 
-* **Usar clave global única (`cfg.OpenAIKey`) controlada desde Super-Admin:** Descartado por el usuario para mantener la paridad con el diseño por tenant (S19) de DeskcommCRM.
-* **Cifrar credenciales LLM usando `JWT_SECRET`:** Rechazado por riesgo de acoplamiento; rotar `JWT_SECRET` invalidaría todas las claves guardadas de los clientes.
-* **Calcular consumo con `SUM(cost_cents)` por cada turno:** Rechazado por precisión insuficiente (`int` trunca costos < 1 centavo) y riesgo de condición de carrera TOCTOU en ráfagas concurrentes.
+1. **Almacenar API keys en texto plano o solo en variables de entorno globales:**
+   * *Rejected by author:* Rompe el modelo multi-tenant SaaS donde cada organización trae su propia clave (`BYOK`) y expone credenciales ante fugas de solo lectura en BD.
+2. **Crear una tabla nueva `ai_budgets_v2` en lugar de extender `ai_budgets`:**
+   * *Rejected by author:* Duplicaría la fuente de verdad respecto a `000001_init_schema.up.sql`. Es más limpio extender `ai_budgets` con `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` y sincronizar `monthly_cap_cents` / `monthly_limit_cents`.
+3. **Delegar el envío de WhatsApp saliente del turno IA a un segundo evento en `event_log`:**
+   * *Rejected by author:* Agrega latencia innecesaria en conversación en tiempo real. Despachar directamente desde `RunAgentTurn` cuando la sesión `evolution_go` está `WORKING` y `AllowOutbound` lo permite mantiene el flujo simple y atómico.
 
 ## Key Decisions & Staging for Next Steps
 
-1. Separar la ejecución técnica en dos bloques ordenados o entregables claros dentro del diseño (`/egm-draft`):
-   * **Bloque 1 (Gobernanza y Seguridad Base):** Enforcement de `is_suspended`, `RequirePlatformAdmin`, sesiones de soporte TTL 1h, auditoría con `support_session_id` y endpoints/UI `/admin`.
-   * **Bloque 2 (Motor LLM + Presupuesto + Evolution Go):** `ai_provider_credentials` cifradas, `ai_budgets` en microcents con reserva atómica, cliente HTTP LLM, worker pool con outbox idempotente y UI `S17/S19`.
-2. Mantener un feature flag `AI_ENGINE_MODE=stub|llm` y fallback a clave/handoff definido para rollout sin interrumpir los webhooks entrantes.
+* Cifrado `AES-256-GCM` usando `SHA-256(AI_ENCRYPTION_KEY)` (o `JWT_SECRET` como fallback solo si `AI_ENCRYPTION_KEY` no está definida, documentando la variable dedicada).
+* `ai.TurnDependencies` (o struct `ai.Runner`) que encapsula `Pool`, `Hub`, `Evolution`, `Throttle` (`AllowOutbound`) y `EncryptionKey` para que tanto `cmd/worker` como tests unitarios/integración puedan invocar `RunAgentTurn` limpiamente.
+* En `AIPage.tsx`, organizar con pestañas claras en español: **Agente IA**, **Proveedores LLM**, **Presupuesto**, **Trazas** y **Conocimiento RAG**.

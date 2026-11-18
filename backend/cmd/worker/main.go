@@ -12,7 +12,9 @@ import (
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/config"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/db"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/realtime"
+	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/whatsapp"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -26,7 +28,31 @@ func main() {
 	}
 	defer pool.Close()
 
+	if err := db.RunMigrations(ctx, pool, "migrations"); err != nil {
+		log.Fatalf("migrations failed: %v", err)
+	}
+
+	var rdb *redis.Client
+	if cfg.RedisURL != "" {
+		if opt, err := redis.ParseURL(cfg.RedisURL); err == nil {
+			rdb = redis.NewClient(opt)
+		}
+	}
+
 	hub := realtime.NewHub(cfg.RedisURL)
+	evoClient := whatsapp.NewEvolutionClient(cfg.EvolutionURL, cfg.EvolutionAPIKey)
+	waThrottle := &whatsapp.Handler{RDB: rdb}
+
+	runner := &ai.Runner{
+		Pool:          pool,
+		Hub:           hub,
+		EncryptionKey: cfg.AIEncryptionKey,
+		Throttle:      waThrottle,
+	}
+	if evoClient != nil {
+		runner.Outbound = evoClient
+	}
+
 	log.Println("KoraCRM Worker started")
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -38,12 +64,12 @@ func main() {
 			log.Println("KoraCRM Worker stopping")
 			return
 		case <-ticker.C:
-			drainEvents(ctx, pool, hub)
+			drainEvents(ctx, pool, runner)
 		}
 	}
 }
 
-func drainEvents(ctx context.Context, pool *pgxpool.Pool, hub *realtime.Hub) {
+func drainEvents(ctx context.Context, pool *pgxpool.Pool, runner *ai.Runner) {
 	rows, err := pool.Query(ctx, `
 		UPDATE event_log SET status = 'processing', attempts = attempts + 1
 		WHERE id IN (
@@ -73,7 +99,10 @@ func drainEvents(ctx context.Context, pool *pgxpool.Pool, hub *realtime.Hub) {
 				Body           string `json:"body"`
 			}
 			if json.Unmarshal(rawPayload, &p) == nil {
-				ai.RunAgentTurn(ctx, pool, hub, orgID, p.ConversationID, p.Body)
+				if err := runner.RunAgentTurn(ctx, orgID, p.ConversationID, p.Body); err != nil {
+					_, _ = pool.Exec(ctx, `UPDATE event_log SET status = 'failed', last_error = $2 WHERE id = $1`, id, err.Error())
+					continue
+				}
 			}
 		}
 		_, _ = pool.Exec(ctx, `UPDATE event_log SET status = 'done' WHERE id = $1`, id)
