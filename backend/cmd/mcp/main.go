@@ -23,14 +23,24 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Resolve organization_id from CRM_API_TOKEN env var for stdio MCP
+	// Resolve organization_id from CRM_API_TOKEN env var for stdio MCP (no fallback)
 	tok := os.Getenv("CRM_API_TOKEN")
-	var orgID string
-	if tok != "" {
-		_ = pool.QueryRow(ctx, `SELECT organization_id FROM api_tokens WHERE token_hash=$1 AND revoked_at IS NULL`, auth.HashToken(tok)).Scan(&orgID)
+	if tok == "" {
+		log.Fatal("CRM_API_TOKEN is required")
 	}
-	if orgID == "" {
-		_ = pool.QueryRow(ctx, `SELECT id FROM organizations LIMIT 1`).Scan(&orgID)
+	var orgID string
+	var isSuspended bool
+	err = pool.QueryRow(ctx, `
+		SELECT t.organization_id, o.is_suspended
+		FROM api_tokens t
+		JOIN organizations o ON o.id = t.organization_id
+		WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > now())
+	`, auth.HashToken(tok)).Scan(&orgID, &isSuspended)
+	if err != nil || orgID == "" {
+		log.Fatal("invalid or expired CRM_API_TOKEN")
+	}
+	if isSuspended {
+		log.Fatal("tenant_suspended")
 	}
 
 	srv := &mcpserver.Server{Pool: pool}

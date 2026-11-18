@@ -41,6 +41,14 @@ func ToolsList() []map[string]any {
 }
 
 func (s *Server) HandleRPC(ctx context.Context, orgID string, req RPCRequest) RPCResponse {
+	var isSuspended bool
+	if err := s.Pool.QueryRow(ctx, `SELECT is_suspended FROM organizations WHERE id = $1`, orgID).Scan(&isSuspended); err != nil || isSuspended {
+		return RPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error:   map[string]any{"code": -32003, "message": "tenant_suspended"},
+		}
+	}
 	switch req.Method {
 	case "initialize":
 		return RPCResponse{

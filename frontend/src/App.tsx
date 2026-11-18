@@ -15,6 +15,7 @@ import { InboxPage } from './pages/InboxPage';
 import { KanbanPage } from './pages/KanbanPage';
 import { ContactsPage } from './pages/ContactsPage';
 import { AIPage } from './pages/AIPage';
+import { AdminPage } from './pages/AdminPage';
 import {
   ChannelsPage,
   LGPDPage,
@@ -70,7 +71,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   if (!ready) {
-    return <div className="min-h-dvh flex items-center justify-center text-sm text-[var(--text-muted)]">Loading KoraCRM...</div>;
+    return <div className="min-h-dvh flex items-center justify-center text-sm text-[var(--text-muted)]">Cargando KoraCRM...</div>;
   }
 
   return <AuthContext.Provider value={{ user, refreshUser, logout }}>{children}</AuthContext.Provider>;
@@ -81,6 +82,15 @@ function AppShellWrapper() {
   return (
     <AppShell user={user} onLogout={logout}>
       <Outlet />
+    </AppShell>
+  );
+}
+
+function AdminPageWrapper() {
+  const { user, logout } = useContext(AuthContext);
+  return (
+    <AppShell user={user} onLogout={logout}>
+      <AdminPage user={user} />
     </AppShell>
   );
 }
@@ -99,6 +109,15 @@ const rootRoute = createRootRoute({ component: () => <Outlet /> });
 const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: LandingPage });
 const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login', component: LoginWrapper });
 const signupRoute = createRoute({ getParentRoute: () => rootRoute, path: '/signup', component: SignupWrapper });
+
+const adminRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin',
+  beforeLoad: () => {
+    if (!getToken()) throw redirect({ to: '/login' });
+  },
+  component: AdminPageWrapper,
+});
 
 const appRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -125,6 +144,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
   signupRoute,
+  adminRoute,
   appRoute.addChildren([
     inboxRoute,
     radarRoute,

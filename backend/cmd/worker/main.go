@@ -62,6 +62,11 @@ func drainEvents(ctx context.Context, pool *pgxpool.Pool, hub *realtime.Hub) {
 		if err := rows.Scan(&id, &orgID, &evType, &rawPayload); err != nil {
 			continue
 		}
+		var isSuspended bool
+		if err := pool.QueryRow(ctx, `SELECT is_suspended FROM organizations WHERE id = $1`, orgID).Scan(&isSuspended); err != nil || isSuspended {
+			_, _ = pool.Exec(ctx, `UPDATE event_log SET status = 'failed', last_error = 'skipped_suspended' WHERE id = $1`, id)
+			continue
+		}
 		if evType == "ai.turn" {
 			var p struct {
 				ConversationID string `json:"conversation_id"`

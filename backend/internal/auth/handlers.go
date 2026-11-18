@@ -195,16 +195,29 @@ func (h *Handler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusUnauthorized, "invalid mfa token")
 		return
 	}
-	var secret string
-	err = h.Pool.QueryRow(r.Context(), `SELECT COALESCE(mfa_secret, '') FROM users WHERE id = $1`, claims.UserID).Scan(&secret)
+	var secret, email, fullName, orgName string
+	var mfaEnabled, isPlatformAdmin bool
+	err = h.Pool.QueryRow(r.Context(), `
+		SELECT COALESCE(u.mfa_secret, ''), u.email, u.full_name, u.mfa_enabled, u.is_platform_admin, o.name
+		FROM users u
+		JOIN organizations o ON o.id = $2
+		WHERE u.id = $1
+	`, claims.UserID, claims.OrganizationID).Scan(&secret, &email, &fullName, &mfaEnabled, &isPlatformAdmin, &orgName)
 	if err != nil || !totp.Validate(req.Code, secret) {
 		httpx.Error(w, http.StatusUnauthorized, "invalid totp code")
 		return
 	}
-	id := Identity{UserID: claims.UserID, OrganizationID: claims.OrganizationID, Role: claims.Role, IsPlatformAdmin: claims.IsPlatformAdmin}
+	id := Identity{UserID: claims.UserID, OrganizationID: claims.OrganizationID, Role: claims.Role, IsPlatformAdmin: isPlatformAdmin}
 	access, _ := IssueAccessToken(h.Cfg.JWTSecret, id, 24*time.Hour, false)
 	h.setRefreshCookie(w, r, claims.UserID)
-	httpx.JSON(w, http.StatusOK, map[string]any{"access_token": access})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"access_token": access,
+		"user": map[string]any{
+			"id": claims.UserID, "email": email, "full_name": fullName,
+			"organization_id": claims.OrganizationID, "org_name": orgName, "role": claims.Role,
+			"mfa_enabled": mfaEnabled, "is_platform_admin": isPlatformAdmin,
+		},
+	})
 }
 
 func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
@@ -246,12 +259,12 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	id, _ := FromContext(r.Context())
 	var email, fullName, orgName string
-	var mfaEnabled bool
+	var mfaEnabled, isPlatformAdmin bool
 	err := h.Pool.QueryRow(r.Context(), `
-		SELECT u.email, u.full_name, u.mfa_enabled, o.name
+		SELECT u.email, u.full_name, u.mfa_enabled, u.is_platform_admin, o.name
 		FROM users u, organizations o
 		WHERE u.id = $1 AND o.id = $2
-	`, id.UserID, id.OrganizationID).Scan(&email, &fullName, &mfaEnabled, &orgName)
+	`, id.UserID, id.OrganizationID).Scan(&email, &fullName, &mfaEnabled, &isPlatformAdmin, &orgName)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "user not found")
 		return
@@ -259,7 +272,7 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"id": id.UserID, "email": email, "full_name": fullName,
 		"organization_id": id.OrganizationID, "org_name": orgName,
-		"role": id.Role, "mfa_enabled": mfaEnabled, "is_platform_admin": id.IsPlatformAdmin,
+		"role": id.Role, "mfa_enabled": mfaEnabled, "is_platform_admin": isPlatformAdmin,
 	})
 }
 

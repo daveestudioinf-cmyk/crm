@@ -164,9 +164,13 @@ func (h *Handler) WAHAWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var sessionID, orgID, secret string
+	var isSuspended bool
 	err = h.Pool.QueryRow(r.Context(), `
-		SELECT id, organization_id, webhook_secret FROM channel_sessions WHERE session_name=$1 LIMIT 1
-	`, sessionName).Scan(&sessionID, &orgID, &secret)
+		SELECT cs.id, cs.organization_id, cs.webhook_secret, o.is_suspended
+		FROM channel_sessions cs
+		JOIN organizations o ON o.id = cs.organization_id
+		WHERE cs.session_name=$1 LIMIT 1
+	`, sessionName).Scan(&sessionID, &orgID, &secret, &isSuspended)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "unknown session")
 		return
@@ -180,6 +184,11 @@ func (h *Handler) WAHAWebhook(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusUnauthorized, "invalid hmac signature")
 			return
 		}
+	}
+
+	if isSuspended {
+		httpx.Error(w, http.StatusForbidden, "tenant_suspended")
+		return
 	}
 
 	var payload struct {
@@ -199,11 +208,19 @@ func (h *Handler) WAHAWebhook(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) EvolutionWebhook(w http.ResponseWriter, r *http.Request) {
 	sessionName := chi.URLParam(r, "session")
 	var sessionID, orgID string
+	var isSuspended bool
 	err := h.Pool.QueryRow(r.Context(), `
-		SELECT id, organization_id FROM channel_sessions WHERE session_name=$1 LIMIT 1
-	`, sessionName).Scan(&sessionID, &orgID)
+		SELECT cs.id, cs.organization_id, o.is_suspended
+		FROM channel_sessions cs
+		JOIN organizations o ON o.id = cs.organization_id
+		WHERE cs.session_name=$1 LIMIT 1
+	`, sessionName).Scan(&sessionID, &orgID, &isSuspended)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "unknown evolution session")
+		return
+	}
+	if isSuspended {
+		httpx.Error(w, http.StatusForbidden, "tenant_suspended")
 		return
 	}
 

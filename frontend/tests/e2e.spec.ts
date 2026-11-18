@@ -1,8 +1,12 @@
 import { test, expect } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
+
+const DB_URL = process.env.DATABASE_URL || 'postgres://postgres@127.0.0.1:5432/crm_dev?sslmode=disable';
 
 test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, testInfo) => {
   const unique = `${Date.now()}-${testInfo.project.name}`;
   const email = `e2e-${unique}@koracrm.dev`;
+  const orgName = `Org ${unique}`;
 
   // 1. Landing y sin desbordamiento horizontal
   await page.goto('/');
@@ -12,7 +16,7 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
 
   // 2. Registro
   await page.goto('/signup');
-  await page.getByPlaceholder('Comercial Acme').fill(`Org ${unique}`);
+  await page.getByPlaceholder('Comercial Acme').fill(orgName);
   await page.getByPlaceholder('Ana Silva').fill('Ana Prueba');
   await page.getByPlaceholder('ana@acme.com').fill(email);
   await page.getByPlaceholder('••••••••').fill('secret123');
@@ -67,4 +71,54 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
   await page.getByPlaceholder('Haz una pregunta como cliente...').fill('envíos paquetería exprés');
   await page.getByRole('button', { name: 'Buscar' }).click();
   await expect(page.getByText(/48 horas/)).toBeVisible();
+
+  // 7. Consola Super-Admin (S26), Suspensión y Sesión de Soporte TTL 1h
+  execFileSync('psql', [
+    DB_URL,
+    '-c',
+    `UPDATE users SET is_platform_admin = true WHERE email = '${email}';`,
+  ]);
+  await page.reload();
+
+  if (testInfo.project.name === 'desktop') {
+    await expect(page.getByRole('link', { name: 'Super-Admin' })).toBeVisible();
+    await page.getByRole('link', { name: 'Super-Admin' }).click();
+  } else {
+    await page.goto('/admin');
+  }
+
+  await expect(page).toHaveURL(/\/admin/);
+  await expect(page.getByRole('heading', { name: 'Consola Super-Admin' })).toBeVisible();
+
+  const adminOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  expect(adminOverflow).toBe(false);
+
+  // Buscar nuestra organización, suspender y reactivar
+  await page.getByPlaceholder('Buscar organización por nombre o slug...').fill(orgName);
+  await page.getByRole('button', { name: 'Buscar' }).click();
+  await expect(page.locator('main').getByText(orgName).locator('visible=true').first()).toBeVisible();
+
+  await page.getByRole('button', { name: 'Suspender' }).first().click();
+  await expect(page.locator('main').getByText('Suspendido', { exact: true }).locator('visible=true').first()).toBeVisible();
+  await page.getByRole('button', { name: 'Activar' }).first().click();
+  await expect(page.locator('main').getByText('Activo', { exact: true }).locator('visible=true').first()).toBeVisible();
+
+  // Iniciar sesión de soporte (Solo lectura 1h)
+  await page.getByRole('button', { name: 'Soporte (1h)' }).first().click();
+  await expect(page.getByRole('heading', { name: 'Iniciar sesión de soporte' })).toBeVisible();
+  await page.locator('#support-reason').fill('Diagnóstico de incidente E2E');
+  await page.getByRole('button', { name: 'Iniciar soporte (1h)' }).click();
+
+  await expect(page).toHaveURL(/\/app\/inbox/);
+  const banner = page.getByRole('status', { name: 'Sesión de soporte activa' });
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText(orgName);
+
+  const bannerOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  expect(bannerOverflow).toBe(false);
+
+  // Cerrar sesión de soporte sin deadlock
+  await page.getByRole('button', { name: 'Salir de soporte' }).click();
+  await expect(page).toHaveURL(/\/admin/);
+  await expect(banner).toBeHidden();
 });

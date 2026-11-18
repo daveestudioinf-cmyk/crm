@@ -57,9 +57,19 @@ func (h *Handler) CreateWebhookSource(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) InboundLeadCapture(w http.ResponseWriter, r *http.Request) {
 	tok := chi.URLParam(r, "token")
 	var orgID string
-	err := h.Pool.QueryRow(r.Context(), `SELECT organization_id FROM webhook_sources WHERE token=$1 AND is_active=true`, tok).Scan(&orgID)
+	var isSuspended bool
+	err := h.Pool.QueryRow(r.Context(), `
+		SELECT ws.organization_id, o.is_suspended
+		FROM webhook_sources ws
+		JOIN organizations o ON o.id = ws.organization_id
+		WHERE ws.token=$1 AND ws.is_active=true
+	`, tok).Scan(&orgID, &isSuspended)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "invalid webhook token")
+		return
+	}
+	if isSuspended {
+		httpx.Error(w, http.StatusForbidden, "tenant_suspended")
 		return
 	}
 	var req struct {

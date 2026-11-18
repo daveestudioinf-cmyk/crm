@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Link, useRouterState } from '@tanstack/react-router';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate, useRouterState } from '@tanstack/react-router';
 import {
   MessageSquare,
   Kanban,
@@ -11,11 +11,20 @@ import {
   BarChart3,
   Settings,
   ShieldCheck,
+  Shield,
   LogOut,
   CheckSquare,
   Flame,
+  Headset,
 } from 'lucide-react';
 import { cn, Sheet } from '../ui/primitives';
+import {
+  SUPPORT_SESSION_EVENT,
+  type SupportSession,
+  endAdminSupportSession,
+  getSupportSession,
+  setSupportSession,
+} from '../../lib/api';
 
 const NAV_ITEMS = [
   { to: '/app/inbox', label: 'Bandeja', icon: MessageSquare },
@@ -31,6 +40,84 @@ const NAV_ITEMS = [
   { to: '/app/settings', label: 'Configuración', icon: Settings },
 ];
 
+function formatRemaining(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+export function ActiveSupportSessionBanner() {
+  const navigate = useNavigate();
+  const [session, setSession] = useState<SupportSession | null>(() => getSupportSession());
+  const [remainingMs, setRemainingMs] = useState<number>(() =>
+    session ? Math.max(0, new Date(session.expires_at).getTime() - Date.now()) : 0
+  );
+  const [ending, setEnding] = useState(false);
+
+  useEffect(() => {
+    function sync() {
+      const current = getSupportSession();
+      setSession(current);
+      setRemainingMs(current ? Math.max(0, new Date(current.expires_at).getTime() - Date.now()) : 0);
+    }
+    window.addEventListener(SUPPORT_SESSION_EVENT, sync);
+    return () => window.removeEventListener(SUPPORT_SESSION_EVENT, sync);
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+    const timer = window.setInterval(() => {
+      const left = Math.max(0, new Date(session.expires_at).getTime() - Date.now());
+      setRemainingMs(left);
+      if (left <= 0) {
+        setSupportSession(null);
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [session]);
+
+  if (!session) return null;
+
+  async function handleEndSupport() {
+    if (!session) return;
+    setEnding(true);
+    try {
+      await endAdminSupportSession(session.id);
+    } catch {
+      // Clear local session even if already expired/ended on server
+    } finally {
+      setSupportSession(null);
+      setEnding(false);
+      navigate({ to: '/admin' });
+    }
+  }
+
+  return (
+    <div
+      role="status"
+      aria-label="Sesión de soporte activa"
+      className="bg-amber-100 border-b border-amber-300 text-amber-950 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs"
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <Headset className="w-4 h-4 text-amber-700 shrink-0" />
+        <span className="truncate">
+          <strong>Sesión de soporte (Solo lectura):</strong> {session.organization_name} · Expira en{' '}
+          <span className="font-mono font-semibold">{formatRemaining(remainingMs)}</span>
+        </span>
+      </div>
+      <button
+        type="button"
+        disabled={ending}
+        onClick={handleEndSupport}
+        className="px-2.5 py-1 rounded-lg bg-amber-900 text-white font-medium hover:bg-amber-800 disabled:opacity-50 cursor-pointer shrink-0"
+      >
+        {ending ? 'Saliendo...' : 'Salir de soporte'}
+      </button>
+    </div>
+  );
+}
+
 export function AppShell({
   user,
   onLogout,
@@ -42,6 +129,10 @@ export function AppShell({
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+
+  const navItems = user?.is_platform_admin
+    ? [...NAV_ITEMS, { to: '/admin', label: 'Super-Admin', icon: Shield }]
+    : NAV_ITEMS;
 
   return (
     <div className="min-h-dvh flex flex-col md:flex-row bg-[var(--bg)] text-[var(--text)] overflow-x-hidden">
@@ -55,7 +146,7 @@ export function AppShell({
           </div>
         </div>
         <nav className="flex-1 overflow-y-auto p-2.5 space-y-1">
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
             const active = pathname.startsWith(item.to);
             return (
@@ -92,6 +183,8 @@ export function AppShell({
 
       {/* Contenido principal */}
       <div className="flex-1 md:pl-60 flex flex-col min-w-0 pb-16 md:pb-0">
+        <ActiveSupportSessionBanner />
+
         {/* Barra superior móvil */}
         <header className="md:hidden h-14 flex items-center justify-between px-4 border-b border-[var(--border)] bg-[var(--bg)] sticky top-0 z-30">
           <div className="flex items-center gap-2 min-w-0">
@@ -149,7 +242,7 @@ export function AppShell({
       {/* Sheet Más en móvil */}
       <Sheet open={moreOpen} onClose={() => setMoreOpen(false)} title="Navegación">
         <div className="grid grid-cols-2 gap-2">
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
             return (
               <Link

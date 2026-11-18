@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/admin"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/ai"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/auth"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/automation"
@@ -51,6 +52,7 @@ func main() {
 	hub := realtime.NewHub(cfg.RedisURL)
 	authMw := &auth.Middleware{Pool: pool, JWTSecret: cfg.JWTSecret}
 	authH := &auth.Handler{Pool: pool, Cfg: cfg}
+	adminH := &admin.Handler{Pool: pool}
 	crmH := &crm.Handler{Pool: pool, Hub: hub}
 	inboxH := &inbox.Handler{Pool: pool, Hub: hub, Evolution: evoClient}
 	waH := &whatsapp.Handler{Pool: pool, Hub: hub, RDB: rdb, Evolution: evoClient, PublicAPIURL: cfg.PublicAPIURL}
@@ -64,7 +66,7 @@ func main() {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{cfg.FrontendOrigin, "http://localhost:5173", "http://127.0.0.1:5173"},
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Organization-ID", "Idempotency-Key"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Organization-ID", "X-Support-Session-ID", "Idempotency-Key"},
 		AllowCredentials: true,
 	}))
 
@@ -83,9 +85,22 @@ func main() {
 		r.Post("/webhooks/evolution/{session}", waH.EvolutionWebhook)
 		r.Post("/webhooks/in/{token}", autoH.InboundLeadCapture)
 
+		// Platform Admin Routes (isolated from RequireTenantAccess and X-Support-Session-ID)
+		r.Route("/admin", func(r chi.Router) {
+			r.Use(authMw.Authenticate)
+			r.Use(authMw.RequirePlatformAdmin)
+
+			r.Get("/tenants", adminH.ListTenants)
+			r.Patch("/tenants/{id}", adminH.UpdateTenantStatus)
+			r.Post("/support-sessions", adminH.StartSupportSession)
+			r.Post("/support-sessions/{id}/end", adminH.EndSupportSession)
+			r.Get("/metrics", adminH.GetMetrics)
+		})
+
 		// Protected Tenant Routes
 		r.Group(func(r chi.Router) {
-			r.Use(authMw.RequireAuth)
+			r.Use(authMw.Authenticate)
+			r.Use(authMw.RequireTenantAccess)
 
 			r.Get("/auth/me", authH.Me)
 			r.Post("/auth/mfa/setup", authH.SetupMFA)
@@ -100,8 +115,14 @@ func main() {
 				hub.ServeSSE(w, r, id.OrganizationID)
 			})
 
-			// Native HTTP MCP endpoint
-			r.Post("/mcp", mcpSrv.ServeHTTP)
+			// Native HTTP MCP endpoint (rejects support sessions explicitly)
+			r.Post("/mcp", func(w http.ResponseWriter, r *http.Request) {
+				if id, ok := auth.FromContext(r.Context()); ok && id.SupportSessID != "" {
+					httpx.Error(w, http.StatusForbidden, "support_session_not_allowed")
+					return
+				}
+				mcpSrv.ServeHTTP(w, r)
+			})
 
 			// Contacts & Merge Queue
 			r.Get("/contacts", crmH.ListContacts)

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -25,6 +26,8 @@ type Identity struct {
 	Role            string
 	IsPlatformAdmin bool
 	SupportSessID   string
+	SupportMode     string
+	RemoteIP        string
 	AuthType        string // "jwt" or "api_token"
 }
 
@@ -105,12 +108,25 @@ func ParseToken(secret, tokenStr string) (*Claims, error) {
 	return claims, nil
 }
 
+func extractRemoteIP(r *http.Request) string {
+	addr := strings.TrimSpace(r.RemoteAddr)
+	if addr == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
+}
+
 type Middleware struct {
 	Pool      *pgxpool.Pool
 	JWTSecret string
 }
 
-func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
+// Authenticate resolves base identity from JWT or api_token (crm_*) and extracts RemoteIP.
+// It does not check tenant suspension or X-Support-Session-ID.
+func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		tokenStr := ""
@@ -125,6 +141,8 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 			httpx.Error(w, http.StatusUnauthorized, "missing authorization token")
 			return
 		}
+
+		remoteIP := extractRemoteIP(r)
 
 		// Check if API Token (prefixed with crm_)
 		if strings.HasPrefix(tokenStr, "crm_") {
@@ -144,6 +162,7 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 			}
 			id.Role = role
 			id.AuthType = "api_token"
+			id.RemoteIP = remoteIP
 			_, _ = m.Pool.Exec(r.Context(), `UPDATE api_tokens SET last_used_at = now() WHERE token_hash = $1`, hash)
 			ctx := context.WithValue(r.Context(), IdentityKey, id)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -156,26 +175,119 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		orgID := claims.OrganizationID
-		if hdrOrg := r.Header.Get("X-Organization-ID"); hdrOrg != "" && hdrOrg != orgID {
-			// Verify user actually belongs to requested org
-			var role string
+		id := Identity{
+			UserID:          claims.UserID,
+			OrganizationID:  claims.OrganizationID,
+			Role:            claims.Role,
+			IsPlatformAdmin: claims.IsPlatformAdmin,
+			RemoteIP:        remoteIP,
+			AuthType:        "jwt",
+		}
+		ctx := context.WithValue(r.Context(), IdentityKey, id)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// RequireTenantAccess enforces tenant isolation, suspension checks, and audited support sessions.
+func (m *Middleware) RequireTenantAccess(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := FromContext(r.Context())
+		if !ok {
+			httpx.Error(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		supportSessID := strings.TrimSpace(r.Header.Get("X-Support-Session-ID"))
+		if supportSessID != "" {
+			if id.AuthType != "jwt" {
+				httpx.Error(w, http.StatusForbidden, "support_session_jwt_only")
+				return
+			}
+			var targetOrgID, mode string
 			err := m.Pool.QueryRow(r.Context(), `
-				SELECT role FROM user_organizations WHERE user_id = $1 AND organization_id = $2
-			`, claims.UserID, hdrOrg).Scan(&role)
-			if err == nil {
-				orgID = hdrOrg
-				claims.Role = role
+				SELECT s.target_organization_id, s.mode
+				FROM platform_support_sessions s
+				JOIN users u ON u.id = s.admin_user_id
+				WHERE s.id = $1 AND s.admin_user_id = $2 AND u.is_platform_admin = true
+				  AND s.ended_at IS NULL AND s.expires_at > now()
+			`, supportSessID, id.UserID).Scan(&targetOrgID, &mode)
+			if err != nil {
+				httpx.Error(w, http.StatusForbidden, "support_session_invalid")
+				return
+			}
+			id.OrganizationID = targetOrgID
+			id.Role = "admin"
+			id.IsPlatformAdmin = true
+			id.SupportSessID = supportSessID
+			id.SupportMode = mode
+
+			if mode == "support_readonly" &&
+				r.Method != http.MethodGet &&
+				r.Method != http.MethodHead &&
+				r.Method != http.MethodOptions {
+				httpx.Error(w, http.StatusForbidden, "support_readonly")
+				return
+			}
+
+			if mode != "support_readonly" {
+				var isSuspended bool
+				err := m.Pool.QueryRow(r.Context(), `SELECT is_suspended FROM organizations WHERE id = $1`, id.OrganizationID).Scan(&isSuspended)
+				if err != nil || isSuspended {
+					httpx.Error(w, http.StatusForbidden, "tenant_suspended")
+					return
+				}
+			}
+
+			ctx := context.WithValue(r.Context(), IdentityKey, id)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		if id.AuthType == "jwt" {
+			if hdrOrg := strings.TrimSpace(r.Header.Get("X-Organization-ID")); hdrOrg != "" && hdrOrg != id.OrganizationID {
+				var role string
+				err := m.Pool.QueryRow(r.Context(), `
+					SELECT role FROM user_organizations WHERE user_id = $1 AND organization_id = $2
+				`, id.UserID, hdrOrg).Scan(&role)
+				if err == nil {
+					id.OrganizationID = hdrOrg
+					id.Role = role
+				}
 			}
 		}
 
-		id := Identity{
-			UserID:          claims.UserID,
-			OrganizationID:  orgID,
-			Role:            claims.Role,
-			IsPlatformAdmin: claims.IsPlatformAdmin,
-			AuthType:        "jwt",
+		var isSuspended bool
+		err := m.Pool.QueryRow(r.Context(), `SELECT is_suspended FROM organizations WHERE id = $1`, id.OrganizationID).Scan(&isSuspended)
+		if err != nil || isSuspended {
+			httpx.Error(w, http.StatusForbidden, "tenant_suspended")
+			return
 		}
+
+		ctx := context.WithValue(r.Context(), IdentityKey, id)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// RequireAuth composes Authenticate and RequireTenantAccess for tenant routes.
+func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
+	return m.Authenticate(m.RequireTenantAccess(next))
+}
+
+// RequirePlatformAdmin verifies users.is_platform_admin in PostgreSQL for /api/v1/admin/*.
+func (m *Middleware) RequirePlatformAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := FromContext(r.Context())
+		if !ok {
+			httpx.Error(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var isPA bool
+		err := m.Pool.QueryRow(r.Context(), `SELECT is_platform_admin FROM users WHERE id = $1`, id.UserID).Scan(&isPA)
+		if err != nil || !isPA {
+			httpx.Error(w, http.StatusForbidden, "platform_admin_required")
+			return
+		}
+		id.IsPlatformAdmin = true
 		ctx := context.WithValue(r.Context(), IdentityKey, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -194,9 +306,10 @@ func RequireRole(minRole string) func(http.Handler) http.Handler {
 	}
 }
 
-func WriteAudit(ctx context.Context, pool *pgxpool.Pool, id Identity, action, resType, resID string, meta any) {
-	_, _ = pool.Exec(ctx, `
-		INSERT INTO api_audit_log (organization_id, actor_user_id, action, resource_type, resource_id, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, id.OrganizationID, id.UserID, action, resType, resID, meta)
+func WriteAudit(ctx context.Context, pool *pgxpool.Pool, id Identity, action, resType, resID string, meta any) error {
+	_, err := pool.Exec(ctx, `
+		INSERT INTO api_audit_log (organization_id, actor_user_id, support_session_id, action, resource_type, resource_id, metadata, ip_address)
+		VALUES (NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, $5, $6, $7, NULLIF($8, ''))
+	`, id.OrganizationID, id.UserID, id.SupportSessID, action, resType, resID, meta, id.RemoteIP)
+	return err
 }
