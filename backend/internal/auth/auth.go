@@ -238,6 +238,16 @@ func (m *Middleware) RequireTenantAccess(next http.Handler) http.Handler {
 				}
 			}
 
+			action := "support.read"
+			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+				action = "support.write"
+			}
+			_ = WriteAudit(r.Context(), m.Pool, id, action, "http_request", r.URL.Path, map[string]any{
+				"method": r.Method,
+				"path":   r.URL.Path,
+				"mode":   mode,
+			})
+
 			ctx := context.WithValue(r.Context(), IdentityKey, id)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
@@ -273,12 +283,16 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 	return m.Authenticate(m.RequireTenantAccess(next))
 }
 
-// RequirePlatformAdmin verifies users.is_platform_admin in PostgreSQL for /api/v1/admin/*.
+// RequirePlatformAdmin verifies JWT auth and users.is_platform_admin in PostgreSQL for /api/v1/admin/*.
 func (m *Middleware) RequirePlatformAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, ok := FromContext(r.Context())
 		if !ok {
 			httpx.Error(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		if id.AuthType != "jwt" {
+			httpx.Error(w, http.StatusForbidden, "platform_admin_jwt_only")
 			return
 		}
 		var isPA bool

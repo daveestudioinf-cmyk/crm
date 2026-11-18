@@ -94,10 +94,21 @@ function formatApiError(code: string, fallback: string): string {
       return 'La sesión de soporte expiró o fue cerrada.';
     case 'support_readonly':
       return 'Modo soporte de solo lectura: no se permiten cambios.';
+    case 'support_session_jwt_only':
+    case 'platform_admin_jwt_only':
+      return 'Esta operación requiere sesión de usuario autenticada.';
     case 'tenant_suspended':
       return 'Esta organización está suspendida.';
     case 'platform_admin_required':
       return 'Se requieren permisos de Super-Admin.';
+    case 'organization not found':
+      return 'Organización no encontrada.';
+    case 'support session not found':
+      return 'Sesión de soporte no encontrada.';
+    case 'audit log failure':
+      return 'Error al registrar auditoría.';
+    case 'db error':
+      return 'Error de base de datos.';
     default:
       return code || fallback;
   }

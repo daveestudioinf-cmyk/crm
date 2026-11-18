@@ -114,7 +114,7 @@ func (h *Handler) ListTenants(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// UpdateTenantStatus suspends or reactivates a tenant organization and audits on target_organization_id.
+// UpdateTenantStatus suspends or reactivates a tenant organization and audits on target_organization_id atomically.
 func (h *Handler) UpdateTenantStatus(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	tenantID := chi.URLParam(r, "id")
@@ -128,9 +128,16 @@ func (h *Handler) UpdateTenantStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	var name string
 	var isSuspended bool
-	err := h.Pool.QueryRow(r.Context(), `
+	err = tx.QueryRow(r.Context(), `
 		UPDATE organizations
 		SET is_suspended = $1, updated_at = now()
 		WHERE id = $2
@@ -145,14 +152,21 @@ func (h *Handler) UpdateTenantStatus(w http.ResponseWriter, r *http.Request) {
 	if isSuspended {
 		action = "tenant.suspend"
 	}
-	auditID := id
-	auditID.OrganizationID = tenantID
-	if err := auth.WriteAudit(r.Context(), h.Pool, auditID, action, "organization", tenantID, map[string]any{
+	_, err = tx.Exec(r.Context(), `
+		INSERT INTO api_audit_log (organization_id, actor_user_id, support_session_id, action, resource_type, resource_id, metadata, ip_address)
+		VALUES (NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, 'organization', $5, $6, NULLIF($7, ''))
+	`, tenantID, id.UserID, id.SupportSessID, action, tenantID, map[string]any{
 		"is_suspended": isSuspended,
 		"reason":       strings.TrimSpace(req.Reason),
-	}); err != nil {
+	}, id.RemoteIP)
+	if err != nil {
 		log.Printf("admin audit error (%s): %v", action, err)
 		httpx.Error(w, http.StatusInternalServerError, "audit log failure")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "commit failed")
 		return
 	}
 
@@ -163,7 +177,7 @@ func (h *Handler) UpdateTenantStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// StartSupportSession creates an audited temporary support session (max 60 minutes).
+// StartSupportSession creates an audited temporary support session (max 60 minutes) atomically.
 func (h *Handler) StartSupportSession(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 
@@ -207,8 +221,15 @@ func (h *Handler) StartSupportSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	var orgName string
-	err := h.Pool.QueryRow(r.Context(), `SELECT name FROM organizations WHERE id = $1`, req.TargetOrganizationID).Scan(&orgName)
+	err = tx.QueryRow(r.Context(), `SELECT name FROM organizations WHERE id = $1`, req.TargetOrganizationID).Scan(&orgName)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "organization not found")
 		return
@@ -216,7 +237,7 @@ func (h *Handler) StartSupportSession(w http.ResponseWriter, r *http.Request) {
 
 	var sessID string
 	var expiresAt, createdAt time.Time
-	err = h.Pool.QueryRow(r.Context(), `
+	err = tx.QueryRow(r.Context(), `
 		INSERT INTO platform_support_sessions (admin_user_id, target_organization_id, mode, reason, expires_at)
 		VALUES ($1, $2, $3, $4, now() + ($5 * interval '1 minute'))
 		RETURNING id, expires_at, created_at
@@ -226,17 +247,22 @@ func (h *Handler) StartSupportSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	auditID := id
-	auditID.OrganizationID = req.TargetOrganizationID
-	auditID.SupportSessID = sessID
-	if err := auth.WriteAudit(r.Context(), h.Pool, auditID, "support_session.start", "platform_support_session", sessID, map[string]any{
+	_, err = tx.Exec(r.Context(), `
+		INSERT INTO api_audit_log (organization_id, actor_user_id, support_session_id, action, resource_type, resource_id, metadata, ip_address)
+		VALUES (NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, 'support_session.start', 'platform_support_session', $4, $5, NULLIF($6, ''))
+	`, req.TargetOrganizationID, id.UserID, sessID, sessID, map[string]any{
 		"mode":        mode,
 		"reason":      req.Reason,
 		"ttl_minutes": ttl,
-	}); err != nil {
-		_, _ = h.Pool.Exec(r.Context(), `UPDATE platform_support_sessions SET ended_at = now() WHERE id = $1`, sessID)
+	}, id.RemoteIP)
+	if err != nil {
 		log.Printf("admin audit error (support_session.start): %v", err)
 		httpx.Error(w, http.StatusInternalServerError, "audit log failure")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "commit failed")
 		return
 	}
 
@@ -251,14 +277,21 @@ func (h *Handler) StartSupportSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// EndSupportSession terminates an active support session immediately.
+// EndSupportSession terminates an active support session immediately and audits atomically.
 func (h *Handler) EndSupportSession(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	sessID := chi.URLParam(r, "id")
 
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	var targetOrgID string
 	var endedAt *time.Time
-	err := h.Pool.QueryRow(r.Context(), `
+	err = tx.QueryRow(r.Context(), `
 		SELECT target_organization_id, ended_at
 		FROM platform_support_sessions
 		WHERE id = $1
@@ -269,7 +302,7 @@ func (h *Handler) EndSupportSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if endedAt == nil {
-		_, err = h.Pool.Exec(r.Context(), `
+		_, err = tx.Exec(r.Context(), `
 			UPDATE platform_support_sessions SET ended_at = now() WHERE id = $1 AND ended_at IS NULL
 		`, sessID)
 		if err != nil {
@@ -278,12 +311,18 @@ func (h *Handler) EndSupportSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	auditID := id
-	auditID.OrganizationID = targetOrgID
-	auditID.SupportSessID = sessID
-	if err := auth.WriteAudit(r.Context(), h.Pool, auditID, "support_session.end", "platform_support_session", sessID, map[string]any{}); err != nil {
+	_, err = tx.Exec(r.Context(), `
+		INSERT INTO api_audit_log (organization_id, actor_user_id, support_session_id, action, resource_type, resource_id, metadata, ip_address)
+		VALUES (NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, 'support_session.end', 'platform_support_session', $4, $5, NULLIF($6, ''))
+	`, targetOrgID, id.UserID, sessID, sessID, map[string]any{}, id.RemoteIP)
+	if err != nil {
 		log.Printf("admin audit error (support_session.end): %v", err)
 		httpx.Error(w, http.StatusInternalServerError, "audit log failure")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "commit failed")
 		return
 	}
 

@@ -119,7 +119,6 @@ func TestSuperAdminSuspensionAndSupportSessions(t *testing.T) {
 			r.Use(mw.RequireTenantAccess)
 			r.Get("/tenant/ping", func(w http.ResponseWriter, r *http.Request) {
 				id, _ := auth.FromContext(r.Context())
-				_ = auth.WriteAudit(r.Context(), pool, id, "tenant.ping", "org", id.OrganizationID, map[string]any{})
 				httpx.JSON(w, http.StatusOK, map[string]any{
 					"org_id":          id.OrganizationID,
 					"role":            id.Role,
@@ -154,9 +153,17 @@ func TestSuperAdminSuspensionAndSupportSessions(t *testing.T) {
 		return rec
 	}
 
-	// 1. RequirePlatformAdmin rejects regular user
+	// 1. RequirePlatformAdmin rejects regular user and rejects api_token (even if owned by platform admin)
 	if rec := doReq("GET", "/api/v1/admin/tenants", regularJWT, "", "", nil); rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-platform-admin, got %d: %s", rec.Code, rec.Body.String())
+	}
+	adminAPIToken := "crm_pa_" + time.Now().Format("150405.000000")
+	_, _ = pool.Exec(ctx, `
+		INSERT INTO api_tokens (organization_id, user_id, name, token_hash)
+		VALUES ($1, $2, 'pa-token', $3)
+	`, adminOrgID, adminUserID, auth.HashToken(adminAPIToken))
+	if rec := doReq("GET", "/api/v1/admin/tenants", adminAPIToken, "", "", nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 platform_admin_jwt_only for api_token on /admin/*, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	// 2. Platform admin can suspend targetOrg
@@ -243,15 +250,15 @@ func TestSuperAdminSuspensionAndSupportSessions(t *testing.T) {
 		t.Fatalf("unexpected support identity: %+v", pingRes)
 	}
 
-	// Verify api_audit_log recorded support_session_id
+	// Verify api_audit_log recorded support_session_id automatically via RequireTenantAccess
 	var loggedSessID string
 	err = pool.QueryRow(ctx, `
 		SELECT COALESCE(support_session_id::text, '') FROM api_audit_log
-		WHERE organization_id = $1 AND action = 'tenant.ping'
+		WHERE organization_id = $1 AND action = 'support.read'
 		ORDER BY created_at DESC LIMIT 1
 	`, targetOrgID).Scan(&loggedSessID)
 	if err != nil || loggedSessID != sessID {
-		t.Fatalf("expected support_session_id=%s in api_audit_log, got err=%v val=%q", sessID, err, loggedSessID)
+		t.Fatalf("expected support_session_id=%s in api_audit_log for support.read, got err=%v val=%q", sessID, err, loggedSessID)
 	}
 
 	// 9. POST mutation is blocked in support_readonly (403 support_readonly)

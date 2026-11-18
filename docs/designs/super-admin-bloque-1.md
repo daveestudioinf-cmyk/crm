@@ -94,21 +94,21 @@ Cliente / Admin Browser                    Agente Externo (MCP)
 
 1. **Middleware y Auth (`backend/internal/auth/auth.go` y `handlers.go`):**
    * `Authenticate`: resuelve JWT o `api_token` (`crm_*`), extrae `RemoteIP` (procesado por `chi/middleware.RealIP` + `net.SplitHostPort`) y construye la identidad base sin consultar `is_suspended` ni `X-Support-Session-ID`.
-   * `RequirePlatformAdmin`: consulta `users.is_platform_admin` en PostgreSQL en cada petición a `/api/v1/admin/*`.
-   * `RequireTenantAccess`: protege `/api/v1/*` del tenant. Valida `X-Support-Session-ID` (solo JWT, prioridad sobre `X-Organization-ID`, `id.Role = "admin"`, bloqueo de escritura en `support_readonly`, excepción de lectura sobre org suspendida) o, en tráfico normal, exige `organizations.is_suspended = false`.
+   * `RequirePlatformAdmin`: exige `AuthType == "jwt"` (`403 platform_admin_jwt_only` si es `api_token`) y consulta `users.is_platform_admin` en PostgreSQL en cada petición a `/api/v1/admin/*`.
+   * `RequireTenantAccess`: protege `/api/v1/*` del tenant. Valida `X-Support-Session-ID` (solo JWT, prioridad sobre `X-Organization-ID`, `id.Role = "admin"`, bloqueo de escritura en `support_readonly`, excepción de lectura sobre org suspendida y registro automático de `WriteAudit` por petición de soporte) o, en tráfico normal, exige `organizations.is_suspended = false`.
    * `WriteAudit`: persiste `support_session_id` e `ip_address`; en acciones de plataforma recibe explícitamente el `target_organization_id` afectado.
    * `handlers.go`: `Login`, `VerifyMFA` y `Me` incluyen `is_platform_admin` en el JSON de usuario.
 
 2. **Dominio Super-Admin (`backend/internal/admin/handlers.go`):**
    * `GET /api/v1/admin/tenants`: lista organizaciones paginadas (`limit <= 100`, `offset >= 0`) con filtro `q`, `is_suspended` y conteos.
-   * `PATCH /api/v1/admin/tenants/{id}`: recibe `{"is_suspended": bool, "reason": string}`, actualiza `organizations.is_suspended` y registra auditoría en el `target_organization_id`.
-   * `POST /api/v1/admin/support-sessions`: exige `reason` no vacío, valida `mode IN ('support_readonly', 'full')` y `1 <= ttl_minutes <= 60` (default 60), inserta en `platform_support_sessions` y audita sobre el `target_organization_id`.
-   * `POST /api/v1/admin/support-sessions/{id}/end`: marca `ended_at = now()` y audita sobre el `target_organization_id`.
+   * `PATCH /api/v1/admin/tenants/{id}`: recibe `{"is_suspended": bool, "reason": string}`, actualiza `organizations.is_suspended` y registra auditoría en el `target_organization_id` dentro de una transacción atómica.
+   * `POST /api/v1/admin/support-sessions`: exige `reason` no vacío, valida `mode IN ('support_readonly', 'full')` y `1 <= ttl_minutes <= 60` (default 60), inserta en `platform_support_sessions` y audita sobre el `target_organization_id` dentro de una transacción atómica.
+   * `POST /api/v1/admin/support-sessions/{id}/end`: marca `ended_at = now()` y audita sobre el `target_organization_id` dentro de una transacción atómica.
    * `GET /api/v1/admin/metrics`: KPIs globales cross-tenant.
 
 3. **Corte uniforme de suspensión en Worker, Webhooks y MCP:**
    * `backend/cmd/worker/main.go`: al inicio de cada evento de tenant en `drainEvents` (incluyendo `ai.turn` — cola de turnos IA), verifica `organizations.is_suspended = false`; si está suspendida, marca `skipped_suspended`.
-   * `backend/internal/whatsapp/handlers.go`: `EvolutionWebhook` / `WAHAWebhook` omiten encolar `ai.turn` si `is_suspended = true`.
+   * `backend/internal/whatsapp/handlers.go`: `EvolutionWebhook` / `WAHAWebhook` rechazan con `403 tenant_suspended` (omitiendo ingestión y encolado `ai.turn`) si `is_suspended = true`.
    * `backend/internal/automation/handlers.go`: `InboundLeadCapture` (`/api/v1/webhooks/in/{token}`) rechaza con `403 tenant_suspended` si `is_suspended = true`.
    * `backend/internal/mcpserver/server.go` y `backend/cmd/mcp/main.go`: `HandleRPC` verifica `organizations.is_suspended = false` en **cada invocación** RPC; `cmd/mcp/main.go` exige `CRM_API_TOKEN` válido (sin fallback a la primera organización). En `/api/v1/mcp`, `X-Support-Session-ID` es rechazado con `403`.
 
@@ -140,7 +140,7 @@ Cliente / Admin Browser                    Agente Externo (MCP)
 
 ## Risks & Mitigations
 
-* **Fallo de auditoría en sesiones de soporte:** Si `WriteAudit` falla al registrar una operación en `platform_support_sessions` o acciones `/admin/*`, el handler debe registrar el error y fallar cerrado (`500`) en creación/cierre de sesiones para no dejar accesos sin rastro.
+* **Fallo de auditoría en sesiones de soporte:** Si `WriteAudit` falla al registrar una operación en `platform_support_sessions` o acciones `/admin/*`, el handler revierte la transacción SQL y falla cerrado (`500`) en suspensión/creación/cierre de sesiones para no dejar cambios ni accesos sin rastro.
 * **Auto-suspensión del Super-Admin:** Como `/api/v1/admin/*` usa `Authenticate + RequirePlatformAdmin` sin validar `is_suspended` de la organización propia del admin, un administrador no queda bloqueado fuera de `/admin` aunque suspenda su propio tenant de prueba.
 * **Escalabilidad de `/admin/tenants` y `/admin/metrics`:** `GET /api/v1/admin/tenants` impone paginación (`limit <= 100`) con ordenamiento por `created_at DESC`; `GET /api/v1/admin/metrics` usa consultas agregadas simples acotadas.
 * **Extracción de IP detrás de Caddy:** Se usa `middleware.RealIP` de `chi` (ya activo en `cmd/api/main.go`) combinado con `net.SplitHostPort(r.RemoteAddr)`.
@@ -155,8 +155,8 @@ Cliente / Admin Browser                    Agente Externo (MCP)
 * **Type / Scope:** Go Auth & Plan Separation Middlewares.
 * **Proposed Changes:**
   * Añadir `SupportMode string` y `RemoteIP string` a `Identity`.
-  * Refactorizar `RequireAuth` en `Authenticate` (identidad base JWT o `api_token` + `RemoteIP`) y `RequireTenantAccess` (plano de tenant: rechazar `X-Support-Session-ID` si `AuthType != "jwt"`, ignorar `X-Organization-ID` cuando haya sesión de soporte, validar `platform_support_sessions` + `users.is_platform_admin`, fijar `id.Role = "admin"`, bloquear `POST`/`PUT`/`PATCH`/`DELETE` en `support_readonly`, y exigir `organizations.is_suspended = false` salvo lectura en `support_readonly`). Mantener `RequireAuth` como alias compuesto `Authenticate` + `RequireTenantAccess` si algún caller lo necesita, o cablear explícitamente en `main.go`.
-  * Añadir `RequirePlatformAdmin` (valida `users.is_platform_admin` en PostgreSQL).
+  * Refactorizar `RequireAuth` en `Authenticate` (identidad base JWT o `api_token` + `RemoteIP`) y `RequireTenantAccess` (plano de tenant: rechazar `X-Support-Session-ID` si `AuthType != "jwt"`, ignorar `X-Organization-ID` cuando haya sesión de soporte, validar `platform_support_sessions` + `users.is_platform_admin`, fijar `id.Role = "admin"`, bloquear `POST`/`PUT`/`PATCH`/`DELETE` en `support_readonly`, exigir `organizations.is_suspended = false` salvo lectura en `support_readonly`, y registrar `WriteAudit` en cada petición con `X-Support-Session-ID`). Mantener `RequireAuth` como alias compuesto `Authenticate` + `RequireTenantAccess` si algún caller lo necesita, o cablear explícitamente en `main.go`.
+  * Añadir `RequirePlatformAdmin` (exige `AuthType == "jwt"` y valida `users.is_platform_admin` en PostgreSQL).
   * Actualizar `WriteAudit` para insertar `support_session_id` e `ip_address`.
 
 #### 2. `backend/internal/auth/handlers.go` (Modify)
@@ -167,18 +167,18 @@ Cliente / Admin Browser                    Agente Externo (MCP)
 #### 3. `backend/internal/admin/handlers.go` (Create)
 * **Type / Scope:** Go Platform Admin HTTP Handlers.
 * **Proposed Changes:**
-  * Implementar `ListTenants` (paginado `limit <= 100`), `UpdateTenantStatus` (audita sobre `target_organization_id`), `StartSupportSession` (valida `reason != ""`, `mode IN ('support_readonly','full')`, `1 <= ttl_minutes <= 60`, audita sobre `target_organization_id`), `EndSupportSession` (audita sobre `target_organization_id`) y `GetMetrics`.
+  * Implementar `ListTenants` (paginado `limit <= 100`), `UpdateTenantStatus` (audita sobre `target_organization_id` en transacción atómica), `StartSupportSession` (valida `reason != ""`, `mode IN ('support_readonly','full')`, `1 <= ttl_minutes <= 60`, audita sobre `target_organization_id` en transacción atómica), `EndSupportSession` (audita sobre `target_organization_id` en transacción atómica) y `GetMetrics`.
 
 #### 4. `backend/cmd/api/main.go` (Modify)
 * **Type / Scope:** Go HTTP Router Wiring.
 * **Proposed Changes:**
-  * Registrar `/api/v1/admin/*` con `Authenticate` + `RequirePlatformAdmin` (sin `RequireTenantAccess`).
+  * Registrar `/api/v1/admin/*` con `Authenticate` + `RequirePlatformAdmin` (sin `RequireTenantAccess`) y `/api/v1/auth/me` con `Authenticate` para que un Super-Admin conserve su perfil en la PWA incluso si su propia organización está suspendida.
   * Registrar rutas de tenant con `Authenticate` + `RequireTenantAccess`, y rechazar `X-Support-Session-ID` en `POST /api/v1/mcp`.
 
 #### 5. `backend/internal/whatsapp/handlers.go` y `backend/internal/automation/handlers.go` (Modify)
 * **Type / Scope:** Inbound Webhook Suspension Guards.
 * **Proposed Changes:**
-  * En `EvolutionWebhook` / `WAHAWebhook`: omitir encolado `ai.turn` si `organizations.is_suspended = true`.
+  * En `EvolutionWebhook` / `WAHAWebhook`: responder `403 tenant_suspended` (omitiendo ingestión y encolado `ai.turn`) si `organizations.is_suspended = true`.
   * En `InboundLeadCapture` (`/api/v1/webhooks/in/{token}`): responder `403 tenant_suspended` si `organizations.is_suspended = true`.
 
 #### 6. `backend/cmd/worker/main.go` (Modify)

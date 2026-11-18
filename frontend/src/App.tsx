@@ -7,7 +7,7 @@ import {
   RouterProvider,
   redirect,
 } from '@tanstack/react-router';
-import { apiFetch, getToken, setToken } from './lib/api';
+import { apiFetch, getToken, setSupportSession, setToken } from './lib/api';
 import { AppShell } from './components/shell/AppShell';
 import { LandingPage } from './pages/LandingPage';
 import { LoginPage, SignupPage } from './pages/AuthPages';
@@ -52,8 +52,9 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
       const me = await apiFetch('/auth/me');
       setUser(me);
     } catch {
-      setToken(null);
-      setUser(null);
+      if (!getToken()) {
+        setUser(null);
+      }
     } finally {
       setReady(true);
     }
@@ -64,6 +65,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   async function logout() {
+    setSupportSession(null);
     await apiFetch('/auth/logout', { method: 'POST' }).catch(() => {});
     setToken(null);
     setUser(null);

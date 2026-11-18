@@ -84,7 +84,9 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
     await expect(page.getByRole('link', { name: 'Super-Admin' })).toBeVisible();
     await page.getByRole('link', { name: 'Super-Admin' }).click();
   } else {
-    await page.goto('/admin');
+    await page.getByRole('button', { name: 'Más' }).click();
+    await expect(page.getByRole('link', { name: 'Super-Admin' })).toBeVisible();
+    await page.getByRole('link', { name: 'Super-Admin' }).click();
   }
 
   await expect(page).toHaveURL(/\/admin/);
@@ -93,17 +95,15 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
   const adminOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(adminOverflow).toBe(false);
 
-  // Buscar nuestra organización, suspender y reactivar
+  // Buscar nuestra organización y suspenderla
   await page.getByPlaceholder('Buscar organización por nombre o slug...').fill(orgName);
   await page.getByRole('button', { name: 'Buscar' }).click();
   await expect(page.locator('main').getByText(orgName).locator('visible=true').first()).toBeVisible();
 
   await page.getByRole('button', { name: 'Suspender' }).first().click();
   await expect(page.locator('main').getByText('Suspendido', { exact: true }).locator('visible=true').first()).toBeVisible();
-  await page.getByRole('button', { name: 'Activar' }).first().click();
-  await expect(page.locator('main').getByText('Activo', { exact: true }).locator('visible=true').first()).toBeVisible();
 
-  // Iniciar sesión de soporte (Solo lectura 1h)
+  // Iniciar sesión de soporte (Solo lectura 1h) sobre el tenant suspendido
   await page.getByRole('button', { name: 'Soporte (1h)' }).first().click();
   await expect(page.getByRole('heading', { name: 'Iniciar sesión de soporte' })).toBeVisible();
   await page.locator('#support-reason').fill('Diagnóstico de incidente E2E');
@@ -114,11 +114,39 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
   await expect(banner).toBeVisible();
   await expect(banner).toContainText(orgName);
 
+  // Verificar que la lectura (GET) funciona sobre el tenant suspendido en support_readonly
+  await expect(page.getByText('Carlos Comprador').first()).toBeVisible();
+
+  // Verificar que una mutación (POST) con X-Support-Session-ID es rechazada con 403 support_readonly
+  const readonlyCheck = await page.evaluate(async () => {
+    const token = localStorage.getItem('koracrm_access_token');
+    const rawSess = sessionStorage.getItem('koracrm_support_session');
+    const sess = rawSess ? JSON.parse(rawSess) : null;
+    const res = await fetch('/api/v1/contacts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'X-Support-Session-ID': sess?.id || '',
+      },
+      body: JSON.stringify({ name: 'Bloqueado en Readonly' }),
+    });
+    const body = await res.json().catch(() => ({}));
+    return { status: res.status, error: body.error };
+  });
+  expect(readonlyCheck.status).toBe(403);
+  expect(readonlyCheck.error).toBe('support_readonly');
+
   const bannerOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(bannerOverflow).toBe(false);
 
-  // Cerrar sesión de soporte sin deadlock
+  // Cerrar sesión de soporte sin deadlock y reactivar el tenant
   await page.getByRole('button', { name: 'Salir de soporte' }).click();
   await expect(page).toHaveURL(/\/admin/);
   await expect(banner).toBeHidden();
+
+  await page.getByPlaceholder('Buscar organización por nombre o slug...').fill(orgName);
+  await page.getByRole('button', { name: 'Buscar' }).click();
+  await page.getByRole('button', { name: 'Activar' }).first().click();
+  await expect(page.locator('main').getByText('Activo', { exact: true }).locator('visible=true').first()).toBeVisible();
 });

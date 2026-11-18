@@ -97,12 +97,17 @@ func main() {
 			r.Get("/metrics", adminH.GetMetrics)
 		})
 
+		// Authenticated User Profile (accessible even if the user's home tenant is suspended)
+		r.Group(func(r chi.Router) {
+			r.Use(authMw.Authenticate)
+			r.Get("/auth/me", authH.Me)
+		})
+
 		// Protected Tenant Routes
 		r.Group(func(r chi.Router) {
 			r.Use(authMw.Authenticate)
 			r.Use(authMw.RequireTenantAccess)
 
-			r.Get("/auth/me", authH.Me)
 			r.Post("/auth/mfa/setup", authH.SetupMFA)
 			r.Post("/auth/mfa/enable", authH.EnableMFA)
 

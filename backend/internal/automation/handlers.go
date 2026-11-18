@@ -247,7 +247,9 @@ func (h *Handler) ListTeam(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	rows, err := h.Pool.Query(r.Context(), `
-		SELECT id, action, resource_type, COALESCE(resource_id,''), metadata, created_at
+		SELECT id, action, resource_type, COALESCE(resource_id,''),
+		       COALESCE(actor_user_id::text,''), COALESCE(support_session_id::text,''), COALESCE(ip_address,''),
+		       metadata, created_at
 		FROM api_audit_log WHERE organization_id=$1 ORDER BY created_at DESC LIMIT 100
 	`, id.OrganizationID)
 	if err != nil {
@@ -257,11 +259,21 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var aid, act, rtype, rid string
+		var aid, act, rtype, rid, actorID, suppSessID, ipAddr string
 		var meta any
 		var created any
-		_ = rows.Scan(&aid, &act, &rtype, &rid, &meta, &created)
-		out = append(out, map[string]any{"id": aid, "action": act, "resource_type": rtype, "resource_id": rid, "metadata": meta, "created_at": created})
+		_ = rows.Scan(&aid, &act, &rtype, &rid, &actorID, &suppSessID, &ipAddr, &meta, &created)
+		out = append(out, map[string]any{
+			"id":                 aid,
+			"action":             act,
+			"resource_type":      rtype,
+			"resource_id":        rid,
+			"actor_user_id":      actorID,
+			"support_session_id": suppSessID,
+			"ip_address":         ipAddr,
+			"metadata":           meta,
+			"created_at":         created,
+		})
 	}
 	httpx.JSON(w, http.StatusOK, out)
 }
