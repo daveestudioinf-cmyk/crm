@@ -1,0 +1,6 @@
+{
+  "name": "KoraCRM",
+  "avoid": ["Deskcomm", "DeskcommCRM", "Supabase"],
+  "domains": ["deskcomm.com", "supabase.co", "supabase.com"],
+  "colors": ["#006bff"]
+}

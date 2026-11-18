@@ -1,0 +1,11 @@
+FROM golang:1.24-alpine AS builder
+WORKDIR /app
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o /mcp ./cmd/mcp
+
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=builder /mcp /app/mcp
+CMD ["/app/mcp"]

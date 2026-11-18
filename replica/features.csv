@@ -1,0 +1,44 @@
+feature,area,priority,original,clone,notes
+Multi-tenant isolation by organization_id in Go middleware and SQL queries,Platform & Auth,must,yes,yes,Enforced in RequireAuth middleware & all SQL queries
+Auth in Go with JWT access + HttpOnly refresh cookie + optional TOTP MFA & recovery codes,Platform & Auth,must,yes,yes,JWT + HttpOnly refresh + pquerna/otp TOTP MFA
+4-role RBAC (viewer agent manager admin) + Platform Super-Admin,Platform & Auth,must,yes,yes,HasRole + RequireRole middleware
+Append-only Audit Log for all mutations,Platform & Auth,must,yes,yes,api_audit_log table & /api/v1/audit
+API Tokens (SHA256 Bearer) for MCP/REST & Idempotency-Key support,Platform & Auth,must,yes,yes,crm_ prefixed SHA256 tokens + idempotency_keys
+Audited temporary Platform Support Sessions (readonly/full with TTL),Platform & Auth,should,yes,partial,Schema ready; UI in Admin phase
+Guided tenant onboarding wizard (vocabulary WhatsApp QR AI setup team invite),Onboarding,must,yes,yes,Signup auto-provisions pipelines/AI + Channels QR setup
+Canonical contacts with E.164 phone email CPF validation & deterministic identity resolution,Customer 360,must,yes,yes,Deterministic cpf -> phone -> email resolution
+Merge queue & side-by-side contact merge UI with atomic repointing,Customer 360,must,yes,yes,merge_queue + atomic SQL transaction
+Polymorphic event-sourced timeline (crm_lead_activities),Customer 360,must,yes,yes,Customer 360 timeline in Contacts & Inbox
+Configurable pipeline vocabulary (multi-niche) & declarative custom fields,Customer 360,must,yes,yes,Sales + Support vocabulary in crm_pipelines
+Multi-number WhatsApp QR pairing & lifecycle management via WAHA adapter,WhatsApp Channel,must,yes,yes,channel_sessions + QR polling + reconnect
+HMAC-SHA512 inbound webhook receiver + unique(org external_id) idempotency,WhatsApp Channel,must,yes,yes,POST /api/v1/webhooks/waha/:session
+Optimistic outbound send (sending->sent/delivered/read/failed) + >4096 char chunking,WhatsApp Channel,must,yes,yes,4096 char chunking + SSE broadcast
+Anti-ban defenses (Redis throttle jitter business-hours warm-up STOP detection),WhatsApp Channel,must,yes,yes,Redis daily throttle + STOP opt-out blocking
+Media persistence via MinIO/S3 + signed/proxied URLs,WhatsApp Channel,must,yes,yes,MinIO configured in compose + media_url support
+Meta Cloud API official channel + HSM template sync,WhatsApp Channel,should,yes,partial,Provider enum & schema ready
+3-column real-time Inbox desktop + mobile sheet/drawer layout (zero horizontal scroll),Inbox & Attendance,must,yes,yes,3-col desktop + 2-step mobile + Customer 360 sheet
+Conversation lifecycle (open/pending/ai_handling/claimed/closed/resolved) + CAS revision,Inbox & Attendance,must,yes,yes,service_revision incremented on claim/resolve
+Quick replies (/) internal notes file attach 24h window warning & block-until-claimed,Inbox & Attendance,must,yes,yes,Quick reply chips + notes + STOP block
+Round-robin auto-routing manual transfer/claim team availability & capacity limits,Inbox & Attendance,must,yes,yes,Claim + availability + max_concurrent_chats
+Radar (cooling open conversations),Inbox & Attendance,should,yes,yes,/app/radar + GET /api/v1/radar
+Multi-pipeline Kanban board with fractional indexing drag-drop & bulk actions,CRM Pipeline,must,yes,yes,Fractional position_in_stage + 409 version check + bulk <=50
+Tickets modeled as crm_leads in Support pipeline + cross-lead linking,CRM Pipeline,must,yes,yes,Support Tickets pipeline provisioned on signup
+Tasks with due dates recurrence & reusable Task Plans,CRM Pipeline,should,yes,yes,/app/tasks + CRUD API
+Product catalog for AI price/stock lookup,CRM Pipeline,should,yes,yes,catalog_products + /api/v1/products
+Tenant-isolated AI Agents (system_prompt model config versioning guardrails),AI Agents & RAG,must,yes,yes,ai_agents + RunAgentTurn guardrails
+Multi-source tenant RAG (FAQ PDF/MD catalog) via pgvector / vector similarity,AI Agents & RAG,must,yes,yes,Chunking + 64-dim vector cosine similarity
+Async sentiment analysis + 4-trigger Handoff (explicit sentiment uncertainty critical stage),AI Agents & RAG,must,yes,yes,Handoff triggers + status=pending + SSE alert
+LLM call logging monthly org budget caps (80%/100%) & multi-provider config,AI Agents & RAG,must,yes,yes,ai_invocations + ai_budgets + /app/ai usage card
+Native Go MCP Server exposing CRM tools over stdio/SSE/HTTP with API token auth,AI Agents & RAG,must,yes,yes,cmd/mcp + POST /api/v1/mcp (7 CRM tools)
+AI Cases Central Alerts (/app/ai/inbox) Org Memory Skills & Automated Follow-ups,AI Agents & RAG,should,yes,partial,Core AI runs & handoff alerts implemented
+Event log queue + background Go workers (event-drain recover-stuck sync-sessions),Automation & Webhooks,must,yes,yes,cmd/worker draining event_log with SKIP LOCKED
+Inbound webhook lead capture sources + WHEN/IF/THEN automation builder + retry,Automation & Webhooks,must,yes,yes,POST /api/v1/webhooks/in/:token + automation_rules
+LGPD granular consent data-request export & cascade anonymization redact,LGPD Compliance,must,yes,yes,/app/lgpd + export JSON + cascade anonymization
+Performance dashboard (funnel sales goals attendant metrics) & Activities report,Analytics,should,yes,yes,/app/metrics + GET /api/v1/metrics
+WhatsApp Campaigns (throttled) & B2B Prospecting,Marketing & Outbound,could,yes,no,
+Agenda & Waitlist module,Vertical Modules,could,yes,no,
+Installable PWA with mobile bottom navigation bar & offline shell,Mobile & PWA,must,yes,yes,manifest.webmanifest + sw.js + bottom nav + zero overflow
+Unified Go SSE/WebSocket Realtime Hub with Redis pub/sub fan-out,Inbox & Attendance,must,no,yes,Differentiator: zero-BaaS realtime
+Mobile-first Kanban stage-tabs & Customer 360 bottom sheet (zero horizontal overflow),Mobile & PWA,must,no,yes,Differentiator: superior mobile UX
+Voice/VoIP SIP Trunking & WebRTC media server (WaCalls/Asterisk),Voice / VoIP,could,yes,skip,Out of scope: requires external SIP/Asterisk hardware and UDP WebRTC server
+Proprietary Brazilian ERPs (Amigo Clinic Nuvemshop partner kit HostGator),Integrations,could,yes,skip,Out of scope: proprietary third-party partner credentials
