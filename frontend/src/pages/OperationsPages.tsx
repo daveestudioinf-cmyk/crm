@@ -189,76 +189,11 @@ export function ChannelsPage() {
   );
 }
 
-export function WebhooksPage() {
-  const [sources, setSources] = useState<any[]>([]);
-  const [rules, setRules] = useState<any[]>([]);
-  const [name, setName] = useState('');
-
-  const load = () => Promise.all([apiFetch('/webhooks/sources').then(setSources), apiFetch('/automations').then(setRules)]);
-  useEffect(() => { load(); }, []);
-
-  async function addSource(e: React.FormEvent) {
-    e.preventDefault();
-    await apiFetch('/webhooks/sources', { method: 'POST', body: JSON.stringify({ name }) });
-    setName('');
-    load();
-  }
-
-  return (
-    <div className="p-4 md:p-6 space-y-5 max-w-4xl">
-      <h1 className="text-xl font-bold">Webhooks y Automatizaciones WHEN/IF/THEN</h1>
-      <form onSubmit={addSource} className="flex gap-2 max-w-md">
-        <Input required placeholder="Nombre de fuente (ej. Formulario Web)" value={name} onChange={(e) => setName(e.target.value)} />
-        <Button type="submit">Crear Fuente</Button>
-      </form>
-      <div className="space-y-2">
-        {sources.map((s) => (
-          <Card key={s.id} className="p-3.5 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <div className="font-semibold text-sm">{s.name}</div>
-              <code className="text-xs text-[var(--text-muted)]">POST /api/v1/webhooks/in/{s.token}</code>
-            </div>
-            <Badge tone="success">Activo</Badge>
-          </Card>
-        ))}
-      </div>
-      <Card className="p-4 space-y-2">
-        <div className="font-semibold text-sm">Reglas de Automatización ({rules.length})</div>
-        {rules.length === 0 && <div className="text-xs text-[var(--text-muted)]">Aún no hay reglas configuradas.</div>}
-      </Card>
-    </div>
-  );
-}
-
-
-
+export { WebhooksPage } from './WebhooksPage';
 export { RadarPage } from './RadarPage';
-
-export function MetricsPage() {
-  const [m, setM] = useState<any>(null);
-  useEffect(() => { apiFetch('/metrics').then(setM); }, []);
-  return (
-    <div className="p-4 md:p-6 space-y-4 max-w-4xl">
-      <h1 className="text-xl font-bold">Analítica y Rendimiento</h1>
-      {m && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          {[
-            ['Contactos', m.contacts_total],
-            ['Leads Abiertos', m.leads_open],
-            ['Ganados', m.leads_won],
-            ['Chats Activos', m.conversations_open],
-            ['Mensajes Hoy', m.messages_today],
-          ].map(([k, v]) => (
-            <Card key={String(k)} className="p-4">
-              <div className="text-xs text-[var(--text-muted)]">{k}</div>
-              <div className="text-2xl font-bold mt-1">{v}</div>
-            </Card>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+export { MetricsPage } from './MetricsPage';
+export { ActivitiesPage } from './ActivitiesPage';
+export { AuditPage } from './AuditPage';
 
 import { Sheet } from '../components/ui/primitives';
 

@@ -483,6 +483,26 @@ func (h *Handler) ingestInbound(w http.ResponseWriter, r *http.Request, sessionI
 		`, orgID, convID, msgID, body)
 	}
 
+	_, _ = h.Pool.Exec(r.Context(), `
+		INSERT INTO event_log (organization_id, event_type, payload)
+		VALUES
+			($1, 'automation.evaluate', jsonb_build_object(
+				'trigger_event', 'message.inbound',
+				'conversation_id', $2::text,
+				'contact_id', $3::text,
+				'message_id', $4::text,
+				'body', $5::text,
+				'from_phone', $6::text,
+				'from_name', $7::text
+			)),
+			($1, 'sentiment.analyze', jsonb_build_object(
+				'conversation_id', $2::text,
+				'contact_id', $3::text,
+				'message_id', $4::text,
+				'body', $5::text
+			))
+	`, orgID, convID, contactID, msgID, body, fromPhone, fromName)
+
 	h.publish(orgID, "message.created", map[string]any{
 		"id": msgID, "conversation_id": convID, "direction": "inbound", "sender_type": "customer", "body": body,
 	})

@@ -57,7 +57,7 @@ func main() {
 	waH := &whatsapp.Handler{Pool: pool, Hub: hub, RDB: rdb, Evolution: evoClient, PublicAPIURL: cfg.PublicAPIURL}
 	inboxH := &inbox.Handler{Pool: pool, Hub: hub, Evolution: evoClient, Throttle: waH, Cfg: cfg}
 	aiH := &ai.Handler{Pool: pool, Hub: hub, EncryptionKey: cfg.AIEncryptionKey}
-	autoH := &automation.Handler{Pool: pool}
+	autoH := &automation.Handler{Pool: pool, Hub: hub}
 	mcpSrv := &mcpserver.Server{Pool: pool}
 
 	r := chi.NewRouter()
@@ -243,7 +243,7 @@ func main() {
 				r.Delete("/channels/{id}", waH.DeleteChannel)
 			})
 
-			// AI Agents, Providers, Budgets, Runs, Knowledge (RAG) & Memory
+			// AI Agents, Providers, Budgets, Runs, Knowledge (RAG), Memory, Follow-ups, Routers, Skills, Cases & Inbox
 			r.Get("/ai/agents", aiH.ListAgents)
 			r.Get("/ai/providers", aiH.ListProviders)
 			r.Get("/ai/budget", aiH.GetBudget)
@@ -252,24 +252,58 @@ func main() {
 			r.Get("/ai/memory", aiH.ListMemory)
 			r.Get("/ai/knowledge", aiH.ListKnowledge)
 			r.Post("/ai/knowledge/search", aiH.SearchKnowledge)
+			r.Get("/ai/followups", aiH.ListFollowups)
+			r.Get("/ai/routers", aiH.ListRouters)
+			r.Get("/ai/skills", aiH.ListSkills)
+			r.Get("/ai/cases", aiH.ListCases)
+			r.Get("/ai/inbox", aiH.ListInbox)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole("manager"))
 				r.Post("/ai/agents", aiH.CreateAgent)
 				r.Patch("/ai/agents/{id}", aiH.UpdateAgent)
+				r.Delete("/ai/agents/{id}", aiH.DeleteAgent)
 				r.Post("/ai/providers", aiH.UpsertProvider)
 				r.Delete("/ai/providers/{id}", aiH.DeleteProvider)
 				r.Put("/ai/budget", aiH.UpdateBudget)
 				r.Post("/ai/memory", aiH.CreateMemory)
+				r.Patch("/ai/memory/{id}", aiH.UpdateMemory)
 				r.Delete("/ai/memory/{id}", aiH.DeleteMemory)
 				r.Post("/ai/knowledge", aiH.CreateKnowledge)
+				r.Patch("/ai/knowledge/{id}", aiH.UpdateKnowledge)
 				r.Delete("/ai/knowledge/{id}", aiH.DeleteKnowledge)
+				r.Post("/ai/followups", aiH.CreateFollowup)
+				r.Patch("/ai/followups/{id}", aiH.UpdateFollowup)
+				r.Delete("/ai/followups/{id}", aiH.DeleteFollowup)
+				r.Post("/ai/routers", aiH.CreateRouter)
+				r.Patch("/ai/routers/{id}", aiH.UpdateRouter)
+				r.Delete("/ai/routers/{id}", aiH.DeleteRouter)
+				r.Patch("/ai/skills/{id}", aiH.UpdateSkill)
+				r.Post("/ai/cases/{id}/approve", aiH.ApproveCase)
+				r.Post("/ai/cases/{id}/reject", aiH.RejectCase)
+				r.Post("/ai/inbox/{id}/read", aiH.MarkInboxRead)
 			})
 
-			// Webhooks, Automations, LGPD, Team, Audit, Metrics
+			// Webhooks, Automations, LGPD, Team, Activities, Audit, Metrics
 			r.Get("/webhooks/sources", autoH.ListWebhookSources)
-			r.Post("/webhooks/sources", autoH.CreateWebhookSource)
 			r.Get("/automations", autoH.ListRules)
-			r.Post("/automations", autoH.CreateRule)
+			r.Get("/automation-rules", autoH.ListRules)
+			r.Get("/automations/runs", autoH.ListRuleRuns)
+			r.Get("/automation-rules/{id}/runs", autoH.ListRuleRuns)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("manager"))
+				r.Post("/webhooks/sources", autoH.CreateWebhookSource)
+				r.Patch("/webhooks/sources/{id}", autoH.UpdateWebhookSource)
+				r.Delete("/webhooks/sources/{id}", autoH.DeleteWebhookSource)
+				r.Post("/webhooks/sources/{id}/test", autoH.TestWebhookSource)
+				r.Post("/automations", autoH.CreateRule)
+				r.Patch("/automations/{id}", autoH.UpdateRule)
+				r.Delete("/automations/{id}", autoH.DeleteRule)
+				r.Post("/automation-rules", autoH.CreateRule)
+				r.Patch("/automation-rules/{id}", autoH.UpdateRule)
+				r.Delete("/automation-rules/{id}", autoH.DeleteRule)
+				r.Post("/automation-runs/{id}/retry", autoH.RetryAutomationRun)
+				r.Post("/automations/runs/{id}/retry", autoH.RetryAutomationRun)
+			})
 			r.Get("/lgpd/requests", autoH.ListLGPDRequests)
 			r.Post("/lgpd/requests", autoH.CreateLGPDRequest)
 			r.Group(func(r chi.Router) {
@@ -278,8 +312,11 @@ func main() {
 				r.Post("/lgpd/requests/{id}/reject", autoH.RejectLGPDRequest)
 			})
 			r.Get("/team", autoH.ListTeam)
+			r.Get("/activities", autoH.ListActivities)
 			r.Get("/audit", autoH.ListAudit)
 			r.Get("/metrics", autoH.GetMetrics)
+			r.Get("/metrics/funnel", autoH.GetFunnelMetrics)
+			r.Get("/metrics/attendants", autoH.GetAttendantMetrics)
 		})
 	})
 

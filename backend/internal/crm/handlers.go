@@ -1,6 +1,7 @@
 package crm
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -15,7 +16,112 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var e164Re = regexp.MustCompile(`^\+[1-9]\d{6,14}$`)
+var (
+	e164Re        = regexp.MustCompile(`^\+[1-9]\d{6,14}$`)
+	ErrInvalidCPF = errors.New("invalid_cpf")
+)
+
+type ContactInput struct {
+	Name        string
+	PhoneNumber string
+	Email       string
+	CPF         string
+	Tags        []string
+	ActorUserID string
+}
+
+type ContactResolution struct {
+	ContactID        string
+	ResolvedExisting bool
+	Created          bool
+}
+
+// ResolveOrCreateContact performs deterministic identity resolution (cpf -> phone_e164 -> email),
+// queues conflicts into merge_queue, or creates a new contact if no match exists.
+func ResolveOrCreateContact(ctx context.Context, pool *pgxpool.Pool, orgID string, in ContactInput) (ContactResolution, error) {
+	name := strings.TrimSpace(in.Name)
+	phone := strings.TrimSpace(in.PhoneNumber)
+	email := strings.TrimSpace(in.Email)
+	tags := in.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+
+	var cleanCPF string
+	if strings.TrimSpace(in.CPF) != "" {
+		var ok bool
+		cleanCPF, ok = ValidateCPF(in.CPF)
+		if !ok {
+			return ContactResolution{}, ErrInvalidCPF
+		}
+	}
+
+	var matchByCPF, matchByPhone, matchByEmail string
+	if cleanCPF != "" {
+		_ = pool.QueryRow(ctx, `
+			SELECT id FROM contacts
+			WHERE organization_id=$1 AND cpf=$2 AND is_merged_into IS NULL
+			LIMIT 1
+		`, orgID, cleanCPF).Scan(&matchByCPF)
+	}
+	if phone != "" {
+		_ = pool.QueryRow(ctx, `
+			SELECT c.id FROM contacts c
+			WHERE c.organization_id=$1 AND c.is_merged_into IS NULL
+			  AND (c.phone_number=$2 OR EXISTS (
+			      SELECT 1 FROM contact_phones cp
+			      WHERE cp.organization_id=$1 AND cp.contact_id=c.id AND cp.phone_e164=$2
+			  ))
+			LIMIT 1
+		`, orgID, phone).Scan(&matchByPhone)
+	}
+	if email != "" {
+		_ = pool.QueryRow(ctx, `
+			SELECT id FROM contacts
+			WHERE organization_id=$1 AND LOWER(email)=LOWER($2) AND is_merged_into IS NULL
+			LIMIT 1
+		`, orgID, email).Scan(&matchByEmail)
+	}
+
+	if matchByPhone != "" && matchByEmail != "" && matchByPhone != matchByEmail {
+		_, _ = pool.Exec(ctx, `
+			INSERT INTO merge_queue (organization_id, primary_contact_id, duplicate_contact_id, reason)
+			VALUES ($1, $2, $3, 'phone_email_conflict')
+		`, orgID, matchByPhone, matchByEmail)
+	}
+
+	existing := matchByCPF
+	if existing == "" {
+		existing = matchByPhone
+	}
+	if existing == "" {
+		existing = matchByEmail
+	}
+	if existing != "" {
+		return ContactResolution{ContactID: existing, ResolvedExisting: true}, nil
+	}
+
+	var cid string
+	err := pool.QueryRow(ctx, `
+		INSERT INTO contacts (organization_id, name, phone_number, email, cpf, tags)
+		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), $6) RETURNING id
+	`, orgID, name, phone, email, cleanCPF, tags).Scan(&cid)
+	if err != nil {
+		return ContactResolution{}, err
+	}
+	if phone != "" {
+		_, _ = pool.Exec(ctx, `
+			INSERT INTO contact_phones (organization_id, contact_id, phone_e164, is_primary)
+			VALUES ($1,$2,$3,true) ON CONFLICT DO NOTHING
+		`, orgID, cid, phone)
+	}
+	_, _ = pool.Exec(ctx, `
+		INSERT INTO crm_lead_activities (organization_id, contact_id, actor_user_id, type, summary)
+		VALUES ($1,$2,NULLIF($3,'')::uuid,'contact_created','Contact created')
+	`, orgID, cid, in.ActorUserID)
+
+	return ContactResolution{ContactID: cid, Created: true}, nil
+}
 
 type Handler struct {
 	Pool *pgxpool.Pool
@@ -68,62 +174,29 @@ func (h *Handler) CreateContact(w http.ResponseWriter, r *http.Request) {
 	if req.Tags == nil {
 		req.Tags = []string{}
 	}
-	if strings.TrimSpace(req.CPF) != "" {
-		cleanCPF, ok := ValidateCPF(req.CPF)
-		if !ok {
+
+	res, err := ResolveOrCreateContact(r.Context(), h.Pool, id.OrganizationID, ContactInput{
+		Name:        req.Name,
+		PhoneNumber: req.PhoneNumber,
+		Email:       req.Email,
+		CPF:         req.CPF,
+		Tags:        req.Tags,
+		ActorUserID: id.UserID,
+	})
+	if err != nil {
+		if errors.Is(err, ErrInvalidCPF) {
 			httpx.Error(w, http.StatusBadRequest, "invalid_cpf")
 			return
 		}
-		req.CPF = cleanCPF
-	}
-
-	// Deterministic identity resolution: cpf -> phone_number -> email
-	var matchByCPF, matchByPhone, matchByEmail string
-	if req.CPF != "" {
-		_ = h.Pool.QueryRow(r.Context(), `SELECT id FROM contacts WHERE organization_id=$1 AND cpf=$2 AND is_merged_into IS NULL LIMIT 1`, id.OrganizationID, req.CPF).Scan(&matchByCPF)
-	}
-	if req.PhoneNumber != "" {
-		_ = h.Pool.QueryRow(r.Context(), `SELECT id FROM contacts WHERE organization_id=$1 AND phone_number=$2 AND is_merged_into IS NULL LIMIT 1`, id.OrganizationID, req.PhoneNumber).Scan(&matchByPhone)
-	}
-	if req.Email != "" {
-		_ = h.Pool.QueryRow(r.Context(), `SELECT id FROM contacts WHERE organization_id=$1 AND email=$2 AND is_merged_into IS NULL LIMIT 1`, id.OrganizationID, req.Email).Scan(&matchByEmail)
-	}
-
-	// Detect conflict between two distinct contacts
-	if matchByPhone != "" && matchByEmail != "" && matchByPhone != matchByEmail {
-		_, _ = h.Pool.Exec(r.Context(), `
-			INSERT INTO merge_queue (organization_id, primary_contact_id, duplicate_contact_id, reason)
-			VALUES ($1, $2, $3, 'phone_email_conflict')
-		`, id.OrganizationID, matchByPhone, matchByEmail)
-	}
-
-	existing := matchByCPF
-	if existing == "" {
-		existing = matchByPhone
-	}
-	if existing == "" {
-		existing = matchByEmail
-	}
-	if existing != "" {
-		httpx.JSON(w, http.StatusOK, map[string]any{"id": existing, "resolved_existing": true})
-		return
-	}
-
-	var cid string
-	err := h.Pool.QueryRow(r.Context(), `
-		INSERT INTO contacts (organization_id, name, phone_number, email, cpf, tags)
-		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), $6) RETURNING id
-	`, id.OrganizationID, req.Name, req.PhoneNumber, req.Email, req.CPF, req.Tags).Scan(&cid)
-	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "failed to create contact")
 		return
 	}
-	if req.PhoneNumber != "" {
-		_, _ = h.Pool.Exec(r.Context(), `INSERT INTO contact_phones (organization_id, contact_id, phone_e164, is_primary) VALUES ($1,$2,$3,true) ON CONFLICT DO NOTHING`, id.OrganizationID, cid, req.PhoneNumber)
+	if res.ResolvedExisting {
+		httpx.JSON(w, http.StatusOK, map[string]any{"id": res.ContactID, "resolved_existing": true})
+		return
 	}
-	_, _ = h.Pool.Exec(r.Context(), `INSERT INTO crm_lead_activities (organization_id, contact_id, actor_user_id, type, summary) VALUES ($1,$2,$3,'contact_created','Contact created')`, id.OrganizationID, cid, id.UserID)
-	auth.WriteAudit(r.Context(), h.Pool, id, "contact.create", "contact", cid, map[string]any{"name": req.Name})
-	httpx.JSON(w, http.StatusCreated, map[string]any{"id": cid, "name": req.Name, "phone_number": req.PhoneNumber, "email": req.Email, "tags": req.Tags})
+	auth.WriteAudit(r.Context(), h.Pool, id, "contact.create", "contact", res.ContactID, map[string]any{"name": req.Name})
+	httpx.JSON(w, http.StatusCreated, map[string]any{"id": res.ContactID, "name": req.Name, "phone_number": req.PhoneNumber, "email": req.Email, "tags": req.Tags})
 }
 
 func (h *Handler) GetContact(w http.ResponseWriter, r *http.Request) {

@@ -387,6 +387,170 @@ export interface ChannelSession {
   created_at: string;
 }
 
+export interface WebhookSource {
+  id: string;
+  name: string;
+  token: string;
+  default_pipeline_id?: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface AutomationCondition {
+  field: string;
+  op: 'eq' | 'neq' | 'contains' | 'gt' | 'lt' | 'in' | 'exists';
+  value: string;
+}
+
+export interface AutomationAction {
+  type: 'create_task' | 'move_stage' | 'assign_agent' | 'send_whatsapp' | 'add_tag' | 'webhook_post';
+  title?: string;
+  stage_id?: string;
+  user_id?: string;
+  agent_id?: string;
+  message?: string;
+  tag?: string;
+  url?: string;
+}
+
+export interface AutomationRule {
+  id: string;
+  name: string;
+  trigger_event: string;
+  conditions: AutomationCondition[] | Record<string, any>;
+  actions: AutomationAction[] | Record<string, any>[];
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AutomationRuleRun {
+  id: string;
+  rule_id: string;
+  rule_name?: string;
+  event_id?: string | null;
+  trigger_event?: string;
+  status: 'pending' | 'running' | 'executed' | 'completed' | 'done' | 'failed' | 'skipped';
+  error_message?: string | null;
+  actions_executed?: any[] | number;
+  duration_ms?: number;
+  payload?: Record<string, any>;
+  created_at: string;
+}
+
+export interface FollowupFlow {
+  id: string;
+  name: string;
+  trigger_type: string;
+  delay_minutes: number;
+  prompt_template: string;
+  channel_session_id?: string | null;
+  max_attempts?: number;
+  steps?: any[];
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AIRouter {
+  id: string;
+  name: string;
+  description?: string;
+  intent_keywords: string[];
+  rules?: any[];
+  target_agent_id: string;
+  target_agent_name?: string;
+  priority: number;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AISkill {
+  id: string;
+  skill_key: string;
+  name: string;
+  description: string;
+  category?: string;
+  is_enabled: boolean;
+  config?: Record<string, any>;
+  updated_at?: string;
+}
+
+export interface AgentCase {
+  id: string;
+  conversation_id?: string | null;
+  agent_id?: string | null;
+  title: string;
+  summary: string;
+  status: 'awaiting_human' | 'approved' | 'rejected';
+  decided_by?: string | null;
+  decided_at?: string | null;
+  decision_notes?: string | null;
+  created_at: string;
+}
+
+export interface AgentInboxItem {
+  id: string;
+  case_id?: string | null;
+  conversation_id?: string | null;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  category: string;
+  message: string;
+  is_read: boolean;
+  read_at?: string | null;
+  created_at: string;
+}
+
+export interface FunnelStageMetric {
+  stage_id: string;
+  stage_name: string;
+  pipeline_id?: string;
+  pipeline_name?: string;
+  position?: number;
+  leads_count: number;
+  value_cents: number;
+  conversion_rate?: number;
+}
+
+export interface AttendantMetric {
+  user_id: string;
+  full_name: string;
+  email?: string;
+  conversations_assigned: number;
+  conversations_resolved: number;
+  leads_owned: number;
+  tasks_done: number;
+}
+
+export interface ActivityItem {
+  id: string;
+  lead_id?: string | null;
+  lead_title?: string;
+  contact_id?: string | null;
+  contact_name?: string;
+  actor_id?: string | null;
+  actor_name?: string;
+  type: string;
+  summary: string;
+  metadata?: Record<string, any>;
+  performed_at: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  action: string;
+  resource_type: string;
+  resource_id?: string;
+  actor_user_id?: string;
+  actor_name?: string;
+  actor_email?: string;
+  support_session_id?: string;
+  ip_address?: string;
+  metadata?: Record<string, any>;
+  created_at: string;
+}
+
 export type SSEStatus = 'connecting' | 'connected' | 'reconnecting' | 'offline';
 
 export interface SubscribeSSEOptions {

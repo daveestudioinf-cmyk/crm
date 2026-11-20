@@ -55,14 +55,15 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	var req struct {
-		Name           string   `json:"name"`
-		SystemPrompt   string   `json:"system_prompt"`
-		Provider       string   `json:"provider"`
-		Model          string   `json:"model"`
-		Temperature    *float64 `json:"temperature"`
-		MaxTokens      *int     `json:"max_tokens"`
-		HandoffEnabled *bool    `json:"handoff_enabled"`
-		IsActive       *bool    `json:"is_active"`
+		Name           string          `json:"name"`
+		SystemPrompt   string          `json:"system_prompt"`
+		Provider       string          `json:"provider"`
+		Model          string          `json:"model"`
+		Temperature    *float64        `json:"temperature"`
+		MaxTokens      *int            `json:"max_tokens"`
+		HandoffEnabled *bool           `json:"handoff_enabled"`
+		Guardrails     json.RawMessage `json:"guardrails"`
+		IsActive       *bool           `json:"is_active"`
 	}
 	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Name) == "" {
 		httpx.Error(w, http.StatusBadRequest, "name required")
@@ -90,20 +91,26 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.IsActive != nil {
 		active = *req.IsActive
 	}
+	guardrailsJSON := `{"blocked_topics": ["refund_promise", "legal_advice"], "handoff_on_uncertainty": true}`
+	if len(req.Guardrails) > 0 && string(req.Guardrails) != "null" {
+		guardrailsJSON = string(req.Guardrails)
+	}
 
 	var aid string
+	var guardrailsOut map[string]any
 	err := h.Pool.QueryRow(r.Context(), `
-		INSERT INTO ai_agents (organization_id, name, system_prompt, provider, model, temperature, max_tokens, handoff_enabled, is_active)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id
-	`, id.OrganizationID, strings.TrimSpace(req.Name), req.SystemPrompt, req.Provider, req.Model, temp, maxTok, handoff, active).Scan(&aid)
+		INSERT INTO ai_agents (organization_id, name, system_prompt, provider, model, temperature, max_tokens, handoff_enabled, guardrails, is_active)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) RETURNING id, guardrails
+	`, id.OrganizationID, strings.TrimSpace(req.Name), req.SystemPrompt, req.Provider, req.Model, temp, maxTok, handoff, guardrailsJSON, active).Scan(&aid, &guardrailsOut)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "db error")
 		return
 	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_agent.create", "ai_agent", aid, map[string]any{"name": strings.TrimSpace(req.Name)})
 	httpx.JSON(w, http.StatusCreated, map[string]any{
 		"id": aid, "name": strings.TrimSpace(req.Name), "system_prompt": req.SystemPrompt,
 		"provider": req.Provider, "model": req.Model, "temperature": temp, "max_tokens": maxTok,
-		"handoff_enabled": handoff, "is_active": active, "version": 1,
+		"handoff_enabled": handoff, "guardrails": guardrailsOut, "is_active": active, "version": 1,
 	})
 }
 
@@ -111,14 +118,15 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	aid := chi.URLParam(r, "id")
 	var req struct {
-		Name           *string  `json:"name"`
-		SystemPrompt   *string  `json:"system_prompt"`
-		Provider       *string  `json:"provider"`
-		Model          *string  `json:"model"`
-		Temperature    *float64 `json:"temperature"`
-		MaxTokens      *int     `json:"max_tokens"`
-		HandoffEnabled *bool    `json:"handoff_enabled"`
-		IsActive       *bool    `json:"is_active"`
+		Name           *string         `json:"name"`
+		SystemPrompt   *string         `json:"system_prompt"`
+		Provider       *string         `json:"provider"`
+		Model          *string         `json:"model"`
+		Temperature    *float64        `json:"temperature"`
+		MaxTokens      *int            `json:"max_tokens"`
+		HandoffEnabled *bool           `json:"handoff_enabled"`
+		Guardrails     json.RawMessage `json:"guardrails"`
+		IsActive       *bool           `json:"is_active"`
 	}
 	if err := httpx.Decode(r, &req); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "invalid json")
@@ -132,11 +140,17 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		v := max(50, min(8192, *req.MaxTokens))
 		req.MaxTokens = &v
 	}
+	var guardrailsPtr *string
+	if len(req.Guardrails) > 0 && string(req.Guardrails) != "null" {
+		s := string(req.Guardrails)
+		guardrailsPtr = &s
+	}
 
 	var name, prompt, prov, model string
 	var temp float64
 	var maxTok, ver int
 	var handoff, active bool
+	var guardrailsOut map[string]any
 	err := h.Pool.QueryRow(r.Context(), `
 		UPDATE ai_agents
 		SET name = COALESCE(NULLIF($3, ''), name),
@@ -147,12 +161,13 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		    max_tokens = COALESCE($8, max_tokens),
 		    handoff_enabled = COALESCE($9, handoff_enabled),
 		    is_active = COALESCE($10, is_active),
+		    guardrails = COALESCE($11::jsonb, guardrails),
 		    version = version + 1,
 		    updated_at = now()
 		WHERE id = $1 AND organization_id = $2
-		RETURNING name, system_prompt, provider, model, temperature, max_tokens, handoff_enabled, is_active, version
-	`, aid, id.OrganizationID, req.Name, req.SystemPrompt, req.Provider, req.Model, req.Temperature, req.MaxTokens, req.HandoffEnabled, req.IsActive).
-		Scan(&name, &prompt, &prov, &model, &temp, &maxTok, &handoff, &active, &ver)
+		RETURNING name, system_prompt, provider, model, temperature, max_tokens, handoff_enabled, guardrails, is_active, version
+	`, aid, id.OrganizationID, req.Name, req.SystemPrompt, req.Provider, req.Model, req.Temperature, req.MaxTokens, req.HandoffEnabled, req.IsActive, guardrailsPtr).
+		Scan(&name, &prompt, &prov, &model, &temp, &maxTok, &handoff, &guardrailsOut, &active, &ver)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			httpx.Error(w, http.StatusNotFound, "agent not found")
@@ -161,10 +176,28 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "db error")
 		return
 	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_agent.update", "ai_agent", aid, map[string]any{"version": ver})
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"id": aid, "name": name, "system_prompt": prompt, "provider": prov, "model": model,
-		"temperature": temp, "max_tokens": maxTok, "handoff_enabled": handoff, "is_active": active, "version": ver,
+		"temperature": temp, "max_tokens": maxTok, "handoff_enabled": handoff,
+		"guardrails": guardrailsOut, "is_active": active, "version": ver,
 	})
+}
+
+func (h *Handler) DeleteAgent(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	aid := chi.URLParam(r, "id")
+	res, err := h.Pool.Exec(r.Context(), `DELETE FROM ai_agents WHERE id=$1 AND organization_id=$2`, aid, id.OrganizationID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if res.RowsAffected() == 0 {
+		httpx.Error(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_agent.delete", "ai_agent", aid, map[string]any{})
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (h *Handler) ListProviders(w http.ResponseWriter, r *http.Request) {
@@ -577,6 +610,662 @@ func (h *Handler) DeleteKnowledge(w http.ResponseWriter, r *http.Request) {
 	kid := chi.URLParam(r, "id")
 	_, _ = h.Pool.Exec(r.Context(), `DELETE FROM ai_knowledge_sources WHERE id=$1 AND organization_id=$2`, kid, id.OrganizationID)
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *Handler) UpdateKnowledge(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	kid := chi.URLParam(r, "id")
+	var req struct {
+		Title      *string `json:"title"`
+		SourceType *string `json:"source_type"`
+		Content    *string `json:"content"`
+		RawContent *string `json:"raw_content"`
+		Status     *string `json:"status"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	contentPtr := req.Content
+	if contentPtr == nil {
+		contentPtr = req.RawContent
+	}
+
+	var title, stype, rawContent, status string
+	err := h.Pool.QueryRow(r.Context(), `
+		UPDATE ai_knowledge_sources
+		SET title = COALESCE(NULLIF($3, ''), title),
+		    source_type = COALESCE(NULLIF($4, ''), source_type),
+		    raw_content = COALESCE($5, raw_content),
+		    status = COALESCE(NULLIF($6, ''), status),
+		    updated_at = now()
+		WHERE id = $1 AND organization_id = $2
+		RETURNING title, source_type, raw_content, status
+	`, kid, id.OrganizationID, req.Title, req.SourceType, contentPtr, req.Status).
+		Scan(&title, &stype, &rawContent, &status)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			httpx.Error(w, http.StatusNotFound, "knowledge source not found")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	chunksIndexed := 0
+	if contentPtr != nil {
+		_, _ = h.Pool.Exec(r.Context(), `DELETE FROM ai_chunks WHERE source_id=$1 AND organization_id=$2`, kid, id.OrganizationID)
+		chunks := splitParagraphs(rawContent, 500)
+		for _, ch := range chunks {
+			vec := EmbedText(ch)
+			b, _ := json.Marshal(vec)
+			_, _ = h.Pool.Exec(r.Context(), `
+				INSERT INTO ai_chunks (organization_id, source_id, content, embedding_json) VALUES ($1,$2,$3,$4)
+			`, id.OrganizationID, kid, ch, string(b))
+		}
+		chunksIndexed = len(chunks)
+	}
+
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_knowledge.update", "ai_knowledge_source", kid, map[string]any{"chunks_indexed": chunksIndexed})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id":             kid,
+		"title":          title,
+		"source_type":    stype,
+		"raw_content":    rawContent,
+		"status":         status,
+		"chunks_indexed": chunksIndexed,
+	})
+}
+
+func (h *Handler) UpdateMemory(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	mid := chi.URLParam(r, "id")
+	var req struct {
+		Category *string `json:"category"`
+		Content  *string `json:"content"`
+		IsActive *bool   `json:"is_active"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	var cat, content string
+	var active bool
+	err := h.Pool.QueryRow(r.Context(), `
+		UPDATE org_memory_entries
+		SET category = COALESCE(NULLIF($3, ''), category),
+		    content = COALESCE(NULLIF($4, ''), content),
+		    is_active = COALESCE($5, is_active)
+		WHERE id = $1 AND organization_id = $2
+		RETURNING category, content, is_active
+	`, mid, id.OrganizationID, req.Category, req.Content, req.IsActive).Scan(&cat, &content, &active)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			httpx.Error(w, http.StatusNotFound, "memory entry not found")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_memory.update", "org_memory_entry", mid, map[string]any{"is_active": active})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id": mid, "category": cat, "content": content, "is_active": active,
+	})
+}
+
+// --- S18: Follow-up Flows ---
+
+func (h *Handler) ListFollowups(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT id, name, trigger_type, delay_minutes, max_attempts, prompt_template,
+		       COALESCE(channel_session_id::text,''), steps, is_active, created_at, updated_at
+		FROM followup_flows WHERE organization_id=$1 ORDER BY created_at DESC
+	`, id.OrganizationID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var fid, name, trig, prompt, chanID string
+		var delayMin, maxAtt int
+		var steps any
+		var active bool
+		var createdAt, updatedAt any
+		_ = rows.Scan(&fid, &name, &trig, &delayMin, &maxAtt, &prompt, &chanID, &steps, &active, &createdAt, &updatedAt)
+		out = append(out, map[string]any{
+			"id": fid, "name": name, "trigger_type": trig, "delay_minutes": delayMin,
+			"max_attempts": maxAtt, "prompt_template": prompt, "channel_session_id": chanID,
+			"steps": steps, "is_active": active, "created_at": createdAt, "updated_at": updatedAt,
+		})
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) CreateFollowup(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	var req struct {
+		Name             string          `json:"name"`
+		TriggerType      string          `json:"trigger_type"`
+		DelayMinutes     *int            `json:"delay_minutes"`
+		MaxAttempts      *int            `json:"max_attempts"`
+		PromptTemplate   string          `json:"prompt_template"`
+		ChannelSessionID *string         `json:"channel_session_id"`
+		Steps            json.RawMessage `json:"steps"`
+		IsActive         *bool           `json:"is_active"`
+	}
+	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Name) == "" {
+		httpx.Error(w, http.StatusBadRequest, "name required")
+		return
+	}
+	trig := strings.TrimSpace(req.TriggerType)
+	if trig == "" {
+		trig = "manual"
+	}
+	delayMin := 60
+	if req.DelayMinutes != nil && *req.DelayMinutes >= 0 {
+		delayMin = *req.DelayMinutes
+	}
+	maxAtt := 3
+	if req.MaxAttempts != nil && *req.MaxAttempts > 0 {
+		maxAtt = *req.MaxAttempts
+	}
+	active := true
+	if req.IsActive != nil {
+		active = *req.IsActive
+	}
+	stepsJSON := "[]"
+	if len(req.Steps) > 0 && string(req.Steps) != "null" {
+		stepsJSON = string(req.Steps)
+	}
+	var chanID string
+	if req.ChannelSessionID != nil {
+		chanID = strings.TrimSpace(*req.ChannelSessionID)
+	}
+
+	var fid string
+	err := h.Pool.QueryRow(r.Context(), `
+		INSERT INTO followup_flows (organization_id, name, trigger_type, delay_minutes, max_attempts, prompt_template, channel_session_id, steps, is_active)
+		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,'')::uuid,$8::jsonb,$9) RETURNING id
+	`, id.OrganizationID, strings.TrimSpace(req.Name), trig, delayMin, maxAtt, req.PromptTemplate, chanID, stepsJSON, active).Scan(&fid)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "followup_flow.create", "followup_flow", fid, map[string]any{"name": strings.TrimSpace(req.Name)})
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"id": fid, "name": strings.TrimSpace(req.Name), "trigger_type": trig, "delay_minutes": delayMin,
+		"max_attempts": maxAtt, "prompt_template": req.PromptTemplate, "channel_session_id": chanID,
+		"steps": json.RawMessage(stepsJSON), "is_active": active,
+	})
+}
+
+func (h *Handler) UpdateFollowup(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	fid := chi.URLParam(r, "id")
+	var req struct {
+		Name             *string         `json:"name"`
+		TriggerType      *string         `json:"trigger_type"`
+		DelayMinutes     *int            `json:"delay_minutes"`
+		MaxAttempts      *int            `json:"max_attempts"`
+		PromptTemplate   *string         `json:"prompt_template"`
+		ChannelSessionID *string         `json:"channel_session_id"`
+		Steps            json.RawMessage `json:"steps"`
+		IsActive         *bool           `json:"is_active"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	var stepsPtr *string
+	if len(req.Steps) > 0 && string(req.Steps) != "null" {
+		s := string(req.Steps)
+		stepsPtr = &s
+	}
+
+	var name, trig, prompt, chanID string
+	var delayMin, maxAtt int
+	var stepsOut any
+	var active bool
+	err := h.Pool.QueryRow(r.Context(), `
+		UPDATE followup_flows
+		SET name = COALESCE(NULLIF($3, ''), name),
+		    trigger_type = COALESCE(NULLIF($4, ''), trigger_type),
+		    delay_minutes = COALESCE($5, delay_minutes),
+		    max_attempts = COALESCE($6, max_attempts),
+		    prompt_template = COALESCE($7, prompt_template),
+		    channel_session_id = CASE WHEN $8::text IS NULL THEN channel_session_id ELSE NULLIF($8, '')::uuid END,
+		    steps = COALESCE($9::jsonb, steps),
+		    is_active = COALESCE($10, is_active),
+		    updated_at = now()
+		WHERE id=$1 AND organization_id=$2
+		RETURNING name, trigger_type, delay_minutes, max_attempts, prompt_template, COALESCE(channel_session_id::text,''), steps, is_active
+	`, fid, id.OrganizationID, req.Name, req.TriggerType, req.DelayMinutes, req.MaxAttempts, req.PromptTemplate, req.ChannelSessionID, stepsPtr, req.IsActive).
+		Scan(&name, &trig, &delayMin, &maxAtt, &prompt, &chanID, &stepsOut, &active)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			httpx.Error(w, http.StatusNotFound, "followup flow not found")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "followup_flow.update", "followup_flow", fid, map[string]any{"is_active": active})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id": fid, "name": name, "trigger_type": trig, "delay_minutes": delayMin,
+		"max_attempts": maxAtt, "prompt_template": prompt, "channel_session_id": chanID,
+		"steps": stepsOut, "is_active": active,
+	})
+}
+
+func (h *Handler) DeleteFollowup(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	fid := chi.URLParam(r, "id")
+	res, err := h.Pool.Exec(r.Context(), `DELETE FROM followup_flows WHERE id=$1 AND organization_id=$2`, fid, id.OrganizationID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if res.RowsAffected() == 0 {
+		httpx.Error(w, http.StatusNotFound, "followup flow not found")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "followup_flow.delete", "followup_flow", fid, map[string]any{})
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// --- S18: AI Intent Routers ---
+
+func (h *Handler) ListRouters(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT id, name, description, intent_keywords, rules, COALESCE(target_agent_id::text,''), priority, is_active, created_at, updated_at
+		FROM ai_intent_routers WHERE organization_id=$1 ORDER BY priority ASC, created_at DESC
+	`, id.OrganizationID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var rid, name, desc, targetAgentID string
+		var keywords []string
+		var rules any
+		var prio int
+		var active bool
+		var createdAt, updatedAt any
+		_ = rows.Scan(&rid, &name, &desc, &keywords, &rules, &targetAgentID, &prio, &active, &createdAt, &updatedAt)
+		out = append(out, map[string]any{
+			"id": rid, "name": name, "description": desc, "intent_keywords": keywords,
+			"rules": rules, "target_agent_id": targetAgentID, "priority": prio,
+			"is_active": active, "created_at": createdAt, "updated_at": updatedAt,
+		})
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) CreateRouter(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	var req struct {
+		Name           string          `json:"name"`
+		Description    string          `json:"description"`
+		IntentKeywords []string        `json:"intent_keywords"`
+		Rules          json.RawMessage `json:"rules"`
+		TargetAgentID  *string         `json:"target_agent_id"`
+		Priority       *int            `json:"priority"`
+		IsActive       *bool           `json:"is_active"`
+	}
+	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Name) == "" {
+		httpx.Error(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if req.IntentKeywords == nil {
+		req.IntentKeywords = []string{}
+	}
+	rulesJSON := "[]"
+	if len(req.Rules) > 0 && string(req.Rules) != "null" {
+		rulesJSON = string(req.Rules)
+	}
+	prio := 100
+	if req.Priority != nil {
+		prio = *req.Priority
+	}
+	active := true
+	if req.IsActive != nil {
+		active = *req.IsActive
+	}
+	var targetAgent string
+	if req.TargetAgentID != nil {
+		targetAgent = strings.TrimSpace(*req.TargetAgentID)
+	}
+
+	var rid string
+	err := h.Pool.QueryRow(r.Context(), `
+		INSERT INTO ai_intent_routers (organization_id, name, description, intent_keywords, rules, target_agent_id, priority, is_active)
+		VALUES ($1,$2,$3,$4,$5::jsonb,NULLIF($6,'')::uuid,$7,$8) RETURNING id
+	`, id.OrganizationID, strings.TrimSpace(req.Name), strings.TrimSpace(req.Description), req.IntentKeywords, rulesJSON, targetAgent, prio, active).Scan(&rid)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_router.create", "ai_intent_router", rid, map[string]any{"name": strings.TrimSpace(req.Name)})
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"id": rid, "name": strings.TrimSpace(req.Name), "description": strings.TrimSpace(req.Description),
+		"intent_keywords": req.IntentKeywords, "rules": json.RawMessage(rulesJSON),
+		"target_agent_id": targetAgent, "priority": prio, "is_active": active,
+	})
+}
+
+func (h *Handler) UpdateRouter(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	rid := chi.URLParam(r, "id")
+	var req struct {
+		Name           *string         `json:"name"`
+		Description    *string         `json:"description"`
+		IntentKeywords []string        `json:"intent_keywords"`
+		Rules          json.RawMessage `json:"rules"`
+		TargetAgentID  *string         `json:"target_agent_id"`
+		Priority       *int            `json:"priority"`
+		IsActive       *bool           `json:"is_active"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	var rulesPtr *string
+	if len(req.Rules) > 0 && string(req.Rules) != "null" {
+		s := string(req.Rules)
+		rulesPtr = &s
+	}
+
+	var name, desc, targetAgent string
+	var keywords []string
+	var rulesOut any
+	var prio int
+	var active bool
+	err := h.Pool.QueryRow(r.Context(), `
+		UPDATE ai_intent_routers
+		SET name = COALESCE(NULLIF($3, ''), name),
+		    description = COALESCE($4, description),
+		    intent_keywords = COALESCE($5, intent_keywords),
+		    rules = COALESCE($6::jsonb, rules),
+		    target_agent_id = CASE WHEN $7::text IS NULL THEN target_agent_id ELSE NULLIF($7, '')::uuid END,
+		    priority = COALESCE($8, priority),
+		    is_active = COALESCE($9, is_active),
+		    updated_at = now()
+		WHERE id=$1 AND organization_id=$2
+		RETURNING name, description, intent_keywords, rules, COALESCE(target_agent_id::text,''), priority, is_active
+	`, rid, id.OrganizationID, req.Name, req.Description, req.IntentKeywords, rulesPtr, req.TargetAgentID, req.Priority, req.IsActive).
+		Scan(&name, &desc, &keywords, &rulesOut, &targetAgent, &prio, &active)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			httpx.Error(w, http.StatusNotFound, "intent router not found")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_router.update", "ai_intent_router", rid, map[string]any{"is_active": active})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id": rid, "name": name, "description": desc, "intent_keywords": keywords,
+		"rules": rulesOut, "target_agent_id": targetAgent, "priority": prio, "is_active": active,
+	})
+}
+
+func (h *Handler) DeleteRouter(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	rid := chi.URLParam(r, "id")
+	res, err := h.Pool.Exec(r.Context(), `DELETE FROM ai_intent_routers WHERE id=$1 AND organization_id=$2`, rid, id.OrganizationID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if res.RowsAffected() == 0 {
+		httpx.Error(w, http.StatusNotFound, "intent router not found")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_router.delete", "ai_intent_router", rid, map[string]any{})
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// --- S20: AI Skills ---
+
+var defaultOrgSkills = []struct {
+	Key         string
+	Name        string
+	Description string
+}{
+	{"crm_lookup", "Consulta CRM 360", "Busca datos del contacto, leads activos y tareas recientes."},
+	{"lead_create", "Crear Oportunidad", "Crea un nuevo lead en el embudo configurado."},
+	{"schedule_followup", "Programar Seguimiento", "Inscribe al contacto en un flujo de seguimiento automático."},
+	{"handoff_human", "Derivar a Humano", "Transfiere la conversación a un agente humano cuando detecta baja confianza."},
+	{"catalog_search", "Buscar Catálogo", "Consulta productos, precios y disponibilidad en el catálogo."},
+}
+
+func (h *Handler) ListSkills(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+
+	if agentID == "" {
+		var count int
+		if err := h.Pool.QueryRow(r.Context(), `SELECT COUNT(*) FROM ai_skills WHERE organization_id=$1`, id.OrganizationID).Scan(&count); err == nil && count == 0 {
+			for _, sk := range defaultOrgSkills {
+				_, _ = h.Pool.Exec(r.Context(), `
+					INSERT INTO ai_skills (organization_id, skill_key, name, description, config, is_enabled)
+					VALUES ($1, $2, $3, $4, '{}'::jsonb, true)
+				`, id.OrganizationID, sk.Key, sk.Name, sk.Description)
+			}
+		}
+	}
+
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT id, COALESCE(agent_id::text,''), skill_key, name, description, config, is_enabled, created_at, updated_at
+		FROM ai_skills
+		WHERE organization_id=$1 AND ($2 = '' OR agent_id::text = $2)
+		ORDER BY created_at ASC
+	`, id.OrganizationID, agentID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var sid, aID, key, name, desc string
+		var cfg any
+		var enabled bool
+		var createdAt, updatedAt any
+		_ = rows.Scan(&sid, &aID, &key, &name, &desc, &cfg, &enabled, &createdAt, &updatedAt)
+		out = append(out, map[string]any{
+			"id": sid, "agent_id": aID, "skill_key": key, "name": name,
+			"description": desc, "config": cfg, "is_enabled": enabled,
+			"created_at": createdAt, "updated_at": updatedAt,
+		})
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) UpdateSkill(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	sid := chi.URLParam(r, "id")
+	var req struct {
+		Name        *string         `json:"name"`
+		Description *string         `json:"description"`
+		Config      json.RawMessage `json:"config"`
+		IsEnabled   *bool           `json:"is_enabled"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	var cfgPtr *string
+	if len(req.Config) > 0 && string(req.Config) != "null" {
+		s := string(req.Config)
+		cfgPtr = &s
+	}
+
+	var aID, key, name, desc string
+	var cfgOut any
+	var enabled bool
+	err := h.Pool.QueryRow(r.Context(), `
+		UPDATE ai_skills
+		SET name = COALESCE(NULLIF($3, ''), name),
+		    description = COALESCE($4, description),
+		    config = COALESCE($5::jsonb, config),
+		    is_enabled = COALESCE($6, is_enabled),
+		    updated_at = now()
+		WHERE id=$1 AND organization_id=$2
+		RETURNING COALESCE(agent_id::text,''), skill_key, name, description, config, is_enabled
+	`, sid, id.OrganizationID, req.Name, req.Description, cfgPtr, req.IsEnabled).
+		Scan(&aID, &key, &name, &desc, &cfgOut, &enabled)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			httpx.Error(w, http.StatusNotFound, "skill not found")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_skill.update", "ai_skill", sid, map[string]any{"is_enabled": enabled})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id": sid, "agent_id": aID, "skill_key": key, "name": name,
+		"description": desc, "config": cfgOut, "is_enabled": enabled,
+	})
+}
+
+// --- S21: Agent Cases & Central Alerts Inbox ---
+
+func (h *Handler) ListCases(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT id, COALESCE(conversation_id::text,''), COALESCE(contact_id::text,''), COALESCE(agent_id::text,''),
+		       title, summary, status, COALESCE(decision_notes,''), COALESCE(decided_by::text,''), decided_at, created_at, updated_at
+		FROM agent_cases
+		WHERE organization_id=$1 AND ($2 = '' OR status = $2)
+		ORDER BY created_at DESC LIMIT 100
+	`, id.OrganizationID, status)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var cid, convID, contID, agID, title, summary, st, notes, decidedBy string
+		var decidedAt, createdAt, updatedAt any
+		_ = rows.Scan(&cid, &convID, &contID, &agID, &title, &summary, &st, &notes, &decidedBy, &decidedAt, &createdAt, &updatedAt)
+		out = append(out, map[string]any{
+			"id": cid, "conversation_id": convID, "contact_id": contID, "agent_id": agID,
+			"title": title, "summary": summary, "status": st, "decision_notes": notes,
+			"decided_by": decidedBy, "decided_at": decidedAt, "created_at": createdAt, "updated_at": updatedAt,
+		})
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) decideCase(w http.ResponseWriter, r *http.Request, targetStatus string) {
+	id, _ := auth.FromContext(r.Context())
+	cid := chi.URLParam(r, "id")
+	var req struct {
+		DecisionNotes string `json:"decision_notes"`
+	}
+	_ = httpx.Decode(r, &req)
+
+	var notes, decidedBy string
+	var decidedAt any
+	err := h.Pool.QueryRow(r.Context(), `
+		UPDATE agent_cases
+		SET status = $3,
+		    decision_notes = $4,
+		    decided_by = NULLIF($5,'')::uuid,
+		    decided_at = now(),
+		    updated_at = now()
+		WHERE id = $1 AND organization_id = $2
+		RETURNING COALESCE(decision_notes,''), COALESCE(decided_by::text,''), decided_at
+	`, cid, id.OrganizationID, targetStatus, strings.TrimSpace(req.DecisionNotes), id.UserID).
+		Scan(&notes, &decidedBy, &decidedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			httpx.Error(w, http.StatusNotFound, "case not found")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if h.Hub != nil {
+		h.Hub.Publish(id.OrganizationID, "ai.case_updated", map[string]any{
+			"case_id":    cid,
+			"status":     targetStatus,
+			"decided_by": decidedBy,
+		})
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_case."+targetStatus, "agent_case", cid, map[string]any{"decision_notes": notes})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id":             cid,
+		"status":         targetStatus,
+		"decision_notes": notes,
+		"decided_by":     decidedBy,
+		"decided_at":     decidedAt,
+	})
+}
+
+func (h *Handler) ApproveCase(w http.ResponseWriter, r *http.Request) {
+	h.decideCase(w, r, "approved")
+}
+
+func (h *Handler) RejectCase(w http.ResponseWriter, r *http.Request) {
+	h.decideCase(w, r, "rejected")
+}
+
+func (h *Handler) ListInbox(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	unreadOnly := strings.EqualFold(r.URL.Query().Get("unread_only"), "true")
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT id, COALESCE(case_id::text,''), severity, category, message, is_read, created_at
+		FROM agent_inbox_items
+		WHERE organization_id=$1 AND ($2 = false OR is_read = false)
+		ORDER BY created_at DESC LIMIT 100
+	`, id.OrganizationID, unreadOnly)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var iid, caseID, sev, cat, msg string
+		var isRead bool
+		var createdAt any
+		_ = rows.Scan(&iid, &caseID, &sev, &cat, &msg, &isRead, &createdAt)
+		out = append(out, map[string]any{
+			"id": iid, "case_id": caseID, "severity": sev, "category": cat,
+			"message": msg, "is_read": isRead, "created_at": createdAt,
+		})
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) MarkInboxRead(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	iid := chi.URLParam(r, "id")
+	res, err := h.Pool.Exec(r.Context(), `
+		UPDATE agent_inbox_items SET is_read = true WHERE id=$1 AND organization_id=$2
+	`, iid, id.OrganizationID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if res.RowsAffected() == 0 {
+		httpx.Error(w, http.StatusNotFound, "inbox item not found")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_inbox.read", "agent_inbox_item", iid, map[string]any{})
+	httpx.JSON(w, http.StatusOK, map[string]any{"id": iid, "is_read": true})
 }
 
 type RAGHit struct {

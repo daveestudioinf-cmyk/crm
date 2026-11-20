@@ -140,3 +140,24 @@ func (c *EvolutionClient) SendText(ctx context.Context, instanceName, phoneNumbe
 	_, err := c.do(ctx, http.MethodPost, "/message/sendText/"+instanceName, payload, nil)
 	return err
 }
+
+func (c *EvolutionClient) ConnectionState(ctx context.Context, instanceName string) (string, error) {
+	if c == nil {
+		return "", nil
+	}
+	var res struct {
+		State    string `json:"state"`
+		Instance struct {
+			InstanceName string `json:"instanceName"`
+			State        string `json:"state"`
+		} `json:"instance"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/instance/connectionState/"+instanceName, nil, &res); err != nil {
+		return "", err
+	}
+	if res.Instance.State != "" {
+		return res.Instance.State, nil
+	}
+	return res.State, nil
+}
+

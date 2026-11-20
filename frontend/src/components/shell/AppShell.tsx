@@ -20,6 +20,8 @@ import {
   FileText,
   Briefcase,
   Package,
+  Activity,
+  FileSearch,
 } from 'lucide-react';
 import { cn, Sheet } from '../ui/primitives';
 import {
@@ -51,13 +53,15 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: any; minRole?: string;
   { to: '/app/contacts', label: 'Contactos', icon: Users },
   { to: '/app/tasks', label: 'Tareas', icon: CheckSquare },
   { to: '/app/products', label: 'Productos', icon: Package },
-  { to: '/app/ai', label: 'IA y RAG', icon: Bot, minRole: 'manager' },
+  { to: '/app/ai', label: 'IA y RAG', icon: Bot, minRole: 'manager', matchPrefixes: ['/app/ai'] },
   { to: '/app/channels', label: 'WhatsApp', icon: Radio, minRole: 'manager' },
-  { to: '/app/webhooks', label: 'Automatizaciones', icon: Webhook, minRole: 'manager' },
-  { to: '/app/metrics', label: 'Analítica', icon: BarChart3, minRole: 'manager' },
-  { to: '/app/lgpd', label: 'LGPD y Auditoría', icon: ShieldCheck, minRole: 'manager' },
+  { to: '/app/webhooks', label: 'Automatizaciones', icon: Webhook, minRole: 'manager', matchPrefixes: ['/app/webhooks'] },
+  { to: '/app/metrics', label: 'Analítica', icon: BarChart3, minRole: 'manager', matchPrefixes: ['/app/metrics'] },
+  { to: '/app/activities', label: 'Actividades', icon: Activity, minRole: 'manager', matchPrefixes: ['/app/activities'] },
+  { to: '/app/lgpd', label: 'LGPD', icon: ShieldCheck, minRole: 'manager', matchPrefixes: ['/app/lgpd'] },
+  { to: '/app/audit', label: 'Auditoría', icon: FileSearch, minRole: 'manager', matchPrefixes: ['/app/audit'] },
   { to: '/app/team', label: 'Equipo', icon: UsersRound, minRole: 'manager' },
-  { to: '/app/settings', label: 'Configuración', icon: Settings, minRole: 'manager' },
+  { to: '/app/settings', label: 'Configuración', icon: Settings, minRole: 'manager', matchPrefixes: ['/app/settings'] },
 ];
 
 function formatRemaining(ms: number): string {

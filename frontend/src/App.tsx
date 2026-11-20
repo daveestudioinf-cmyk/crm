@@ -43,6 +43,8 @@ import { LeadDetailPage } from './pages/LeadDetailPage';
 import { ProductsPage } from './pages/ProductsPage';
 import { TasksPage } from './pages/TasksPage';
 import {
+  ActivitiesPage,
+  AuditPage,
   ChannelsPage,
   LGPDPage,
   MetricsPage,
@@ -236,9 +238,22 @@ const contactDetailRoute = createRoute({ getParentRoute: () => appRoute, path: '
 const tasksRoute = createRoute({ getParentRoute: () => appRoute, path: '/tasks', component: TasksPage });
 const productsRoute = createRoute({ getParentRoute: () => appRoute, path: '/products', component: ProductsPage });
 const aiRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai', component: AIPage });
+const aiAgentsRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/agents', component: AIPage });
+const aiFollowupsRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/followups', component: AIPage });
+const aiRoutersRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/routers', component: AIPage });
+const aiProvidersRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/providers', component: AIPage });
+const aiUsageRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/usage', component: AIPage });
+const aiRunsRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/runs', component: AIPage });
+const aiKnowledgeRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/knowledge', component: AIPage });
+const aiMemoryRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/memory', component: AIPage });
+const aiSkillsRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/skills', component: AIPage });
+const aiCasesRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/cases', component: AIPage });
+const aiInboxRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/inbox', component: AIPage });
 const channelsRoute = createRoute({ getParentRoute: () => appRoute, path: '/channels', component: ChannelsPage });
 const webhooksRoute = createRoute({ getParentRoute: () => appRoute, path: '/webhooks', component: WebhooksPage });
 const metricsRoute = createRoute({ getParentRoute: () => appRoute, path: '/metrics', component: MetricsPage });
+const activitiesRoute = createRoute({ getParentRoute: () => appRoute, path: '/activities', component: ActivitiesPage });
+const auditRoute = createRoute({ getParentRoute: () => appRoute, path: '/audit', component: AuditPage });
 const lgpdRoute = createRoute({ getParentRoute: () => appRoute, path: '/lgpd', component: LGPDPage });
 const lgpdRequestsRoute = createRoute({ getParentRoute: () => appRoute, path: '/lgpd/requests', component: LGPDPage });
 const teamRoute = createRoute({ getParentRoute: () => appRoute, path: '/team', component: TeamPage });
@@ -277,9 +292,22 @@ const routeTree = rootRoute.addChildren([
     tasksRoute,
     productsRoute,
     aiRoute,
+    aiAgentsRoute,
+    aiFollowupsRoute,
+    aiRoutersRoute,
+    aiProvidersRoute,
+    aiUsageRoute,
+    aiRunsRoute,
+    aiKnowledgeRoute,
+    aiMemoryRoute,
+    aiSkillsRoute,
+    aiCasesRoute,
+    aiInboxRoute,
     channelsRoute,
     webhooksRoute,
     metricsRoute,
+    activitiesRoute,
+    auditRoute,
     lgpdRoute,
     lgpdRequestsRoute,
     teamRoute,
