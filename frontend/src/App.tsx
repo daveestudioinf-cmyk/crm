@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { Component, createContext, useContext, useEffect, useState } from 'react';
 import {
   createRootRoute,
   createRoute,
@@ -10,19 +10,42 @@ import {
 import { apiFetch, getToken, setSupportSession, setToken } from './lib/api';
 import { AppShell } from './components/shell/AppShell';
 import { LandingPage } from './pages/LandingPage';
-import { LoginPage, SignupPage } from './pages/AuthPages';
+import {
+  ForgotPasswordPage,
+  LoginPage,
+  MfaLoginPage,
+  RecoveryCodePage,
+  ResetPasswordPage,
+  SignupPage,
+} from './pages/AuthPages';
+import { AcceptInvitePage } from './pages/AcceptInvitePage';
+import { OnboardingPage } from './pages/OnboardingPage';
+import {
+  ForbiddenPage,
+  McpConsentPage,
+  NotFoundPage,
+  PrivacyPage,
+  ServerErrorPage,
+  TermsPage,
+} from './pages/LegalPages';
+import { TeamPage } from './pages/TeamPage';
+import { SettingsPage } from './pages/SettingsPage';
 import { InboxPage } from './pages/InboxPage';
 import { KanbanPage } from './pages/KanbanPage';
 import { ContactsPage } from './pages/ContactsPage';
+import { ContactDetailPage } from './pages/ContactDetailPage';
+import { TemplatesPage } from './pages/TemplatesPage';
+import { RadarPage } from './pages/RadarPage';
 import { AIPage } from './pages/AIPage';
 import { AdminPage } from './pages/AdminPage';
+import { CrmHubPage } from './pages/CrmHubPage';
+import { LeadDetailPage } from './pages/LeadDetailPage';
+import { ProductsPage } from './pages/ProductsPage';
+import { TasksPage } from './pages/TasksPage';
 import {
   ChannelsPage,
   LGPDPage,
   MetricsPage,
-  RadarPage,
-  SettingsPage,
-  TasksPage,
   WebhooksPage,
 } from './pages/OperationsPages';
 
@@ -37,6 +60,28 @@ const AuthContext = createContext<AuthCtx>({
   refreshUser: async () => {},
   logout: async () => {},
 });
+
+export function useAuth() {
+  return useContext(AuthContext);
+}
+
+class ErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <ServerErrorPage onRetry={() => this.setState({ hasError: false })} />;
+    }
+    return this.props.children;
+  }
+}
 
 function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null);
@@ -73,7 +118,11 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   if (!ready) {
-    return <div className="min-h-dvh flex items-center justify-center text-sm text-[var(--text-muted)]">Cargando KoraCRM...</div>;
+    return (
+      <div className="min-h-dvh flex items-center justify-center text-sm text-[var(--text-muted)]">
+        Cargando KoraCRM...
+      </div>
+    );
   }
 
   return <AuthContext.Provider value={{ user, refreshUser, logout }}>{children}</AuthContext.Provider>;
@@ -102,6 +151,16 @@ function LoginWrapper() {
   return <LoginPage onAuth={refreshUser} />;
 }
 
+function MfaLoginWrapper() {
+  const { refreshUser } = useContext(AuthContext);
+  return <MfaLoginPage onAuth={refreshUser} />;
+}
+
+function RecoveryCodeWrapper() {
+  const { refreshUser } = useContext(AuthContext);
+  return <RecoveryCodePage onAuth={refreshUser} />;
+}
+
 function SignupWrapper() {
   const { refreshUser } = useContext(AuthContext);
   return <SignupPage onAuth={refreshUser} />;
@@ -109,8 +168,42 @@ function SignupWrapper() {
 
 const rootRoute = createRootRoute({ component: () => <Outlet /> });
 const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: LandingPage });
+const getStartedRoute = createRoute({ getParentRoute: () => rootRoute, path: '/get-started', component: LandingPage });
 const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login', component: LoginWrapper });
+const forgotRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login/forgot', component: ForgotPasswordPage });
+const resetRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login/reset', component: ResetPasswordPage });
+const mfaRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login/mfa', component: MfaLoginWrapper });
+const recoveryRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login/recovery', component: RecoveryCodeWrapper });
 const signupRoute = createRoute({ getParentRoute: () => rootRoute, path: '/signup', component: SignupWrapper });
+const acceptInviteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/team/accept-invite/$token',
+  component: AcceptInvitePage,
+});
+
+const onboardingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/onboarding',
+  beforeLoad: () => {
+    if (!getToken()) throw redirect({ to: '/login' });
+  },
+  component: OnboardingPage,
+});
+
+const onboardingStepRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/onboarding/$step',
+  beforeLoad: () => {
+    if (!getToken()) throw redirect({ to: '/login' });
+  },
+  component: OnboardingPage,
+});
+
+const privacyRoute = createRoute({ getParentRoute: () => rootRoute, path: '/legal/privacy', component: PrivacyPage });
+const termsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/legal/terms', component: TermsPage });
+const forbiddenRoute = createRoute({ getParentRoute: () => rootRoute, path: '/403', component: ForbiddenPage });
+const serverErrorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/500', component: ServerErrorPage });
+const mcpConsentRoute = createRoute({ getParentRoute: () => rootRoute, path: '/oauth/mcp/consent', component: McpConsentPage });
 
 const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -130,45 +223,80 @@ const appRoute = createRoute({
   component: AppShellWrapper,
 });
 
+const crmHubRoute = createRoute({ getParentRoute: () => appRoute, path: '/crm', component: CrmHubPage });
 const inboxRoute = createRoute({ getParentRoute: () => appRoute, path: '/inbox', component: InboxPage });
+const inboxDetailRoute = createRoute({ getParentRoute: () => appRoute, path: '/inbox/$id', component: InboxPage });
 const radarRoute = createRoute({ getParentRoute: () => appRoute, path: '/radar', component: RadarPage });
+const templatesRoute = createRoute({ getParentRoute: () => appRoute, path: '/templates', component: TemplatesPage });
 const kanbanRoute = createRoute({ getParentRoute: () => appRoute, path: '/kanban', component: KanbanPage });
+const pipelineDetailRoute = createRoute({ getParentRoute: () => appRoute, path: '/pipelines/$id', component: KanbanPage });
+const leadDetailRoute = createRoute({ getParentRoute: () => appRoute, path: '/leads/$id', component: LeadDetailPage });
 const contactsRoute = createRoute({ getParentRoute: () => appRoute, path: '/contacts', component: ContactsPage });
+const contactDetailRoute = createRoute({ getParentRoute: () => appRoute, path: '/contacts/$id', component: ContactDetailPage });
 const tasksRoute = createRoute({ getParentRoute: () => appRoute, path: '/tasks', component: TasksPage });
+const productsRoute = createRoute({ getParentRoute: () => appRoute, path: '/products', component: ProductsPage });
 const aiRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai', component: AIPage });
 const channelsRoute = createRoute({ getParentRoute: () => appRoute, path: '/channels', component: ChannelsPage });
 const webhooksRoute = createRoute({ getParentRoute: () => appRoute, path: '/webhooks', component: WebhooksPage });
 const metricsRoute = createRoute({ getParentRoute: () => appRoute, path: '/metrics', component: MetricsPage });
 const lgpdRoute = createRoute({ getParentRoute: () => appRoute, path: '/lgpd', component: LGPDPage });
+const lgpdRequestsRoute = createRoute({ getParentRoute: () => appRoute, path: '/lgpd/requests', component: LGPDPage });
+const teamRoute = createRoute({ getParentRoute: () => appRoute, path: '/team', component: TeamPage });
 const settingsRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings', component: SettingsPage });
+const apiTokensRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/api-tokens', component: SettingsPage });
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  getStartedRoute,
   loginRoute,
+  forgotRoute,
+  resetRoute,
+  mfaRoute,
+  recoveryRoute,
   signupRoute,
+  acceptInviteRoute,
+  onboardingRoute,
+  onboardingStepRoute,
+  privacyRoute,
+  termsRoute,
+  forbiddenRoute,
+  serverErrorRoute,
+  mcpConsentRoute,
   adminRoute,
   appRoute.addChildren([
+    crmHubRoute,
     inboxRoute,
+    inboxDetailRoute,
     radarRoute,
+    templatesRoute,
     kanbanRoute,
+    pipelineDetailRoute,
+    leadDetailRoute,
     contactsRoute,
+    contactDetailRoute,
     tasksRoute,
+    productsRoute,
     aiRoute,
     channelsRoute,
     webhooksRoute,
     metricsRoute,
     lgpdRoute,
+    lgpdRequestsRoute,
+    teamRoute,
     settingsRoute,
+    apiTokensRoute,
   ]),
 ]);
 
-const router = createRouter({ routeTree, defaultNotFoundComponent: LandingPage });
+const router = createRouter({ routeTree, defaultNotFoundComponent: NotFoundPage });
 
 export function App() {
   return (
-    <AuthProvider>
-      <RouterProvider router={router} />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <RouterProvider router={router} />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
 

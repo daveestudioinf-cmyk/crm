@@ -16,6 +16,10 @@ import {
   CheckSquare,
   Flame,
   Headset,
+  UsersRound,
+  FileText,
+  Briefcase,
+  Package,
 } from 'lucide-react';
 import { cn, Sheet } from '../ui/primitives';
 import {
@@ -26,18 +30,34 @@ import {
   setSupportSession,
 } from '../../lib/api';
 
-const NAV_ITEMS = [
+const ROLE_ORDER: Record<string, number> = {
+  viewer: 0,
+  agent: 1,
+  manager: 2,
+  admin: 3,
+};
+
+function hasMinRole(userRole: string | undefined, minRole?: string): boolean {
+  if (!minRole) return true;
+  return (ROLE_ORDER[userRole || 'viewer'] ?? 0) >= (ROLE_ORDER[minRole] ?? 0);
+}
+
+const NAV_ITEMS: Array<{ to: string; label: string; icon: any; minRole?: string; matchPrefixes?: string[] }> = [
+  { to: '/app/crm', label: 'CRM', icon: Briefcase },
   { to: '/app/inbox', label: 'Bandeja', icon: MessageSquare },
   { to: '/app/radar', label: 'Radar', icon: Flame },
-  { to: '/app/kanban', label: 'Embudo', icon: Kanban },
+  { to: '/app/templates', label: 'Plantillas', icon: FileText },
+  { to: '/app/kanban', label: 'Embudo', icon: Kanban, matchPrefixes: ['/app/kanban', '/app/pipelines', '/app/leads'] },
   { to: '/app/contacts', label: 'Contactos', icon: Users },
   { to: '/app/tasks', label: 'Tareas', icon: CheckSquare },
-  { to: '/app/ai', label: 'IA y RAG', icon: Bot },
-  { to: '/app/channels', label: 'WhatsApp', icon: Radio },
-  { to: '/app/webhooks', label: 'Automatizaciones', icon: Webhook },
-  { to: '/app/metrics', label: 'Analítica', icon: BarChart3 },
-  { to: '/app/lgpd', label: 'LGPD y Auditoría', icon: ShieldCheck },
-  { to: '/app/settings', label: 'Configuración', icon: Settings },
+  { to: '/app/products', label: 'Productos', icon: Package },
+  { to: '/app/ai', label: 'IA y RAG', icon: Bot, minRole: 'manager' },
+  { to: '/app/channels', label: 'WhatsApp', icon: Radio, minRole: 'manager' },
+  { to: '/app/webhooks', label: 'Automatizaciones', icon: Webhook, minRole: 'manager' },
+  { to: '/app/metrics', label: 'Analítica', icon: BarChart3, minRole: 'manager' },
+  { to: '/app/lgpd', label: 'LGPD y Auditoría', icon: ShieldCheck, minRole: 'manager' },
+  { to: '/app/team', label: 'Equipo', icon: UsersRound, minRole: 'manager' },
+  { to: '/app/settings', label: 'Configuración', icon: Settings, minRole: 'manager' },
 ];
 
 function formatRemaining(ms: number): string {
@@ -130,9 +150,13 @@ export function AppShell({
   const [moreOpen, setMoreOpen] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
+  const visibleItems = NAV_ITEMS.filter((item) => hasMinRole(user?.role, item.minRole));
   const navItems = user?.is_platform_admin
-    ? [...NAV_ITEMS, { to: '/admin', label: 'Super-Admin', icon: Shield }]
-    : NAV_ITEMS;
+    ? [...visibleItems, { to: '/admin', label: 'Super-Admin', icon: Shield, matchPrefixes: ['/admin'] }]
+    : visibleItems;
+
+  const isNavActive = (item: { to: string; matchPrefixes?: string[] }) =>
+    item.matchPrefixes ? item.matchPrefixes.some((p) => pathname.startsWith(p)) : pathname.startsWith(item.to);
 
   return (
     <div className="min-h-dvh flex flex-col md:flex-row bg-[var(--bg)] text-[var(--text)] overflow-x-hidden">
@@ -148,7 +172,7 @@ export function AppShell({
         <nav className="flex-1 overflow-y-auto p-2.5 space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const active = pathname.startsWith(item.to);
+            const active = isNavActive(item);
             return (
               <Link
                 key={item.to}
@@ -210,12 +234,12 @@ export function AppShell({
       >
         {[
           { to: '/app/inbox', label: 'Bandeja', icon: MessageSquare },
-          { to: '/app/kanban', label: 'Embudo', icon: Kanban },
+          { to: '/app/kanban', label: 'Embudo', icon: Kanban, matchPrefixes: ['/app/kanban', '/app/pipelines', '/app/leads'] },
           { to: '/app/contacts', label: 'Contactos', icon: Users },
-          { to: '/app/ai', label: 'IA', icon: Bot },
+          { to: '/app/crm', label: 'CRM', icon: Briefcase },
         ].map((item) => {
           const Icon = item.icon;
-          const active = pathname.startsWith(item.to);
+          const active = isNavActive(item);
           return (
             <Link
               key={item.to}

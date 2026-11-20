@@ -54,8 +54,8 @@ func main() {
 	authH := &auth.Handler{Pool: pool, Cfg: cfg}
 	adminH := &admin.Handler{Pool: pool}
 	crmH := &crm.Handler{Pool: pool, Hub: hub}
-	inboxH := &inbox.Handler{Pool: pool, Hub: hub, Evolution: evoClient}
 	waH := &whatsapp.Handler{Pool: pool, Hub: hub, RDB: rdb, Evolution: evoClient, PublicAPIURL: cfg.PublicAPIURL}
+	inboxH := &inbox.Handler{Pool: pool, Hub: hub, Evolution: evoClient, Throttle: waH, Cfg: cfg}
 	aiH := &ai.Handler{Pool: pool, Hub: hub, EncryptionKey: cfg.AIEncryptionKey}
 	autoH := &automation.Handler{Pool: pool}
 	mcpSrv := &mcpserver.Server{Pool: pool}
@@ -78,9 +78,13 @@ func main() {
 		// Public Auth & Webhooks
 		r.Post("/auth/signup", authH.Signup)
 		r.Post("/auth/login", authH.Login)
+		r.Post("/auth/forgot", authH.ForgotPassword)
+		r.Post("/auth/reset", authH.ResetPassword)
 		r.Post("/auth/mfa/verify", authH.VerifyMFA)
 		r.Post("/auth/refresh", authH.Refresh)
 		r.Post("/auth/logout", authH.Logout)
+		r.Get("/team/invites/{token}", authH.InspectInvite)
+		r.Post("/team/accept-invite", authH.AcceptInvite)
 		r.Post("/webhooks/waha/{session}", waH.WAHAWebhook)
 		r.Post("/webhooks/evolution/{session}", waH.EvolutionWebhook)
 		r.Post("/webhooks/in/{token}", autoH.InboundLeadCapture)
@@ -101,19 +105,38 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(authMw.Authenticate)
 			r.Get("/auth/me", authH.Me)
+			r.Patch("/auth/me", authH.UpdateMe)
 		})
 
 		// Protected Tenant Routes
 		r.Group(func(r chi.Router) {
 			r.Use(authMw.Authenticate)
 			r.Use(authMw.RequireTenantAccess)
+			r.Use(authMw.Idempotency)
 
 			r.Post("/auth/mfa/setup", authH.SetupMFA)
 			r.Post("/auth/mfa/enable", authH.EnableMFA)
+			r.Post("/auth/mfa/recovery-codes", authH.RegenerateRecoveryCodes)
+			r.Post("/auth/mfa/disable", authH.DisableMFA)
 
 			r.Get("/api-tokens", authH.ListAPITokens)
-			r.Post("/api-tokens", authH.CreateAPIToken)
-			r.Delete("/api-tokens/{id}", authH.RevokeAPIToken)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("admin"))
+				r.Post("/api-tokens", authH.CreateAPIToken)
+				r.Delete("/api-tokens/{id}", authH.RevokeAPIToken)
+			})
+
+			r.Get("/organization", authH.GetOrganization)
+			r.With(auth.RequireRole("admin")).Patch("/organization", authH.UpdateOrganization)
+
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("manager"))
+				r.Get("/team/invites", authH.ListInvites)
+				r.Post("/team/invites", authH.CreateInvite)
+				r.Delete("/team/invites/{id}", authH.RevokeInvite)
+			})
+			r.Patch("/team/members/{id}", authH.UpdateMember)
+			r.With(auth.RequireRole("admin")).Delete("/team/members/{id}", authH.RemoveMember)
 
 			r.Get("/realtime/stream", func(w http.ResponseWriter, r *http.Request) {
 				id, _ := auth.FromContext(r.Context())
@@ -131,37 +154,82 @@ func main() {
 
 			// Contacts & Merge Queue
 			r.Get("/contacts", crmH.ListContacts)
-			r.Post("/contacts", crmH.CreateContact)
 			r.Get("/contacts/merge-queue", crmH.ListMergeQueue)
-			r.Post("/contacts/merge", crmH.MergeContacts)
 			r.Get("/contacts/{id}", crmH.GetContact)
-			r.Patch("/contacts/{id}", crmH.UpdateContact)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("agent"))
+				r.Post("/contacts", crmH.CreateContact)
+				r.Post("/contacts/merge-queue/{id}/dismiss", crmH.DismissMergeQueue)
+				r.Post("/contacts/merge", crmH.MergeContacts)
+				r.Patch("/contacts/{id}", crmH.UpdateContact)
+				r.Post("/contacts/{id}/phones", crmH.AddContactPhone)
+				r.Delete("/contacts/{id}/phones/{phoneId}", crmH.DeleteContactPhone)
+			})
 
 			// Pipelines, Stages & Leads
 			r.Get("/pipelines", crmH.ListPipelines)
-			r.Delete("/stages/{id}", crmH.DeleteStage)
 			r.Get("/leads", crmH.ListLeads)
-			r.Post("/leads", crmH.CreateLead)
-			r.Patch("/leads/{id}", crmH.UpdateLead)
-			r.Post("/leads/bulk", crmH.BulkMoveLeads)
+			r.Get("/leads/{id}", crmH.GetLead)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("agent"))
+				r.Post("/leads", crmH.CreateLead)
+				r.Patch("/leads/{id}", crmH.UpdateLead)
+				r.Delete("/leads/{id}", crmH.DeleteLead)
+				r.Post("/leads/bulk", crmH.BulkMoveLeads)
+				r.Post("/leads/{id}/links", crmH.CreateLeadLink)
+				r.Delete("/leads/{id}/links/{linkId}", crmH.DeleteLeadLink)
+				r.Post("/leads/{id}/activities", crmH.CreateLeadActivity)
+				r.Post("/leads/{id}/attachments", crmH.CreateLeadAttachment)
+				r.Delete("/leads/{id}/attachments/{attId}", crmH.DeleteLeadAttachment)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("manager"))
+				r.Post("/pipelines", crmH.CreatePipeline)
+				r.Patch("/pipelines/{id}", crmH.UpdatePipeline)
+				r.Post("/pipelines/{id}/stages", crmH.CreateStage)
+				r.Post("/stages", crmH.CreateStage)
+				r.Patch("/stages/{id}", crmH.UpdateStage)
+				r.Delete("/stages/{id}", crmH.DeleteStage)
+			})
 
-			// Tasks & Products
+			// Tasks, Task Plans & Products
 			r.Get("/tasks", crmH.ListTasks)
-			r.Post("/tasks", crmH.CreateTask)
-			r.Patch("/tasks/{id}", crmH.UpdateTask)
+			r.Get("/task-plans", crmH.ListTaskPlans)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("agent"))
+				r.Post("/tasks", crmH.CreateTask)
+				r.Patch("/tasks/{id}", crmH.UpdateTask)
+				r.Delete("/tasks/{id}", crmH.DeleteTask)
+				r.Post("/task-plans", crmH.CreateTaskPlan)
+				r.Delete("/task-plans/{id}", crmH.DeleteTaskPlan)
+				r.Post("/task-plans/{id}/apply", crmH.ApplyTaskPlan)
+			})
 			r.Get("/products", crmH.ListProducts)
-			r.Post("/products", crmH.CreateProduct)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("manager"))
+				r.Post("/products", crmH.CreateProduct)
+				r.Patch("/products/{id}", crmH.UpdateProduct)
+				r.Delete("/products/{id}", crmH.DeleteProduct)
+			})
 
-			// Inbox, Conversations, Messages & Templates
+			// Inbox, Conversations, Messages, Media & Templates
 			r.Get("/conversations", inboxH.ListConversations)
-			r.Post("/conversations", inboxH.CreateConversation)
-			r.Post("/conversations/{id}/claim", inboxH.ClaimConversation)
-			r.Post("/conversations/{id}/resolve", inboxH.ResolveConversation)
 			r.Get("/conversations/{id}/messages", inboxH.ListMessages)
-			r.Post("/conversations/{id}/messages", inboxH.SendMessage)
+			r.Get("/media/{id}", inboxH.GetMedia)
 			r.Get("/templates", inboxH.ListTemplates)
-			r.Post("/templates", inboxH.CreateTemplate)
 			r.Get("/radar", inboxH.Radar)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("agent"))
+				r.Post("/conversations", inboxH.CreateConversation)
+				r.Post("/conversations/{id}/claim", inboxH.ClaimConversation)
+				r.Post("/conversations/{id}/transfer", inboxH.TransferConversation)
+				r.Post("/conversations/{id}/resolve", inboxH.ResolveConversation)
+				r.Post("/conversations/{id}/messages", inboxH.SendMessage)
+				r.Post("/media/upload", inboxH.UploadMedia)
+				r.Post("/templates", inboxH.CreateTemplate)
+				r.Patch("/templates/{id}", inboxH.UpdateTemplate)
+				r.Delete("/templates/{id}", inboxH.DeleteTemplate)
+			})
 
 			// Channels (WhatsApp)
 			r.Get("/channels", waH.ListChannels)
@@ -204,7 +272,11 @@ func main() {
 			r.Post("/automations", autoH.CreateRule)
 			r.Get("/lgpd/requests", autoH.ListLGPDRequests)
 			r.Post("/lgpd/requests", autoH.CreateLGPDRequest)
-			r.Post("/lgpd/requests/{id}/execute", autoH.ExecuteLGPDRequest)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("manager"))
+				r.Post("/lgpd/requests/{id}/execute", autoH.ExecuteLGPDRequest)
+				r.Post("/lgpd/requests/{id}/reject", autoH.RejectLGPDRequest)
+			})
 			r.Get("/team", autoH.ListTeam)
 			r.Get("/audit", autoH.ListAudit)
 			r.Get("/metrics", autoH.GetMetrics)

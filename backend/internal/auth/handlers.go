@@ -2,6 +2,7 @@ package auth
 
 import (
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -181,10 +182,88 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	email := strings.TrimSpace(strings.ToLower(req.Email))
+	resp := map[string]any{
+		"ok":      true,
+		"message": "Si el correo existe, recibirás instrucciones para restablecer tu contraseña.",
+	}
+	if email != "" {
+		var userID, pwHash string
+		err := h.Pool.QueryRow(r.Context(), `SELECT id, password_hash FROM users WHERE email = $1`, email).Scan(&userID, &pwHash)
+		if err == nil {
+			if tok, err := IssuePasswordResetToken(h.Cfg.JWTSecret, userID, pwHash, time.Hour); err == nil {
+				if os.Getenv("ENV") != "production" && os.Getenv("APP_ENV") != "production" {
+					resp["reset_token"] = tok
+				}
+			}
+		}
+	}
+	httpx.JSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token       string `json:"token"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.Token) == "" || len(req.NewPassword) < 8 {
+		httpx.Error(w, http.StatusBadRequest, "token and new_password (>=8) are required")
+		return
+	}
+	claims, err := ParsePasswordResetToken(h.Cfg.JWTSecret, req.Token)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, "invalid or expired reset token")
+		return
+	}
+	var currentHash string
+	err = h.Pool.QueryRow(r.Context(), `SELECT password_hash FROM users WHERE id = $1`, claims.UserID).Scan(&currentHash)
+	if err != nil || passwordHashPrefix(currentHash) != claims.PWHashPrefix {
+		httpx.Error(w, http.StatusUnauthorized, "invalid or expired reset token")
+		return
+	}
+	newHash, err := HashPassword(req.NewPassword)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "failed to hash password")
+		return
+	}
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, err := tx.Exec(r.Context(), `UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, newHash, claims.UserID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "failed to update password")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, claims.UserID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "failed to revoke sessions")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "commit failed")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "status": "password_reset"})
+}
+
 func (h *Handler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		MFAToken string `json:"mfa_token"`
-		Code     string `json:"code"`
+		MFAToken     string `json:"mfa_token"`
+		Code         string `json:"code"`
+		RecoveryCode string `json:"recovery_code"`
 	}
 	if err := httpx.Decode(r, &req); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "invalid json")
@@ -203,10 +282,35 @@ func (h *Handler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 		JOIN organizations o ON o.id = $2
 		WHERE u.id = $1
 	`, claims.UserID, claims.OrganizationID).Scan(&secret, &email, &fullName, &mfaEnabled, &isPlatformAdmin, &orgName)
-	if err != nil || !totp.Validate(req.Code, secret) {
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, "invalid mfa token")
+		return
+	}
+
+	if strings.TrimSpace(req.RecoveryCode) != "" {
+		norm := NormalizeRecoveryCode(req.RecoveryCode)
+		codeHash := HashToken(norm)
+		var rcID string
+		err = h.Pool.QueryRow(r.Context(), `
+			UPDATE user_recovery_codes
+			SET used_at = now()
+			WHERE id = (
+				SELECT id FROM user_recovery_codes
+				WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL
+				LIMIT 1
+			)
+			  AND used_at IS NULL
+			RETURNING id
+		`, claims.UserID, codeHash).Scan(&rcID)
+		if err != nil {
+			httpx.Error(w, http.StatusUnauthorized, "invalid or used recovery code")
+			return
+		}
+	} else if !totp.Validate(req.Code, secret) {
 		httpx.Error(w, http.StatusUnauthorized, "invalid totp code")
 		return
 	}
+
 	id := Identity{UserID: claims.UserID, OrganizationID: claims.OrganizationID, Role: claims.Role, IsPlatformAdmin: isPlatformAdmin}
 	access, _ := IssueAccessToken(h.Cfg.JWTSecret, id, 24*time.Hour, false)
 	h.setRefreshCookie(w, r, claims.UserID)
@@ -258,22 +362,101 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	id, _ := FromContext(r.Context())
-	var email, fullName, orgName string
+	var email, fullName, avatarURL, orgName string
 	var mfaEnabled, isPlatformAdmin bool
 	err := h.Pool.QueryRow(r.Context(), `
-		SELECT u.email, u.full_name, u.mfa_enabled, u.is_platform_admin, o.name
+		SELECT u.email, u.full_name, COALESCE(u.avatar_url, ''), u.mfa_enabled, u.is_platform_admin, o.name
 		FROM users u, organizations o
 		WHERE u.id = $1 AND o.id = $2
-	`, id.UserID, id.OrganizationID).Scan(&email, &fullName, &mfaEnabled, &isPlatformAdmin, &orgName)
+	`, id.UserID, id.OrganizationID).Scan(&email, &fullName, &avatarURL, &mfaEnabled, &isPlatformAdmin, &orgName)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "user not found")
 		return
 	}
+
+	orgs := []map[string]any{}
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT o.id, o.name, o.slug, uo.role
+		FROM user_organizations uo
+		JOIN organizations o ON o.id = uo.organization_id
+		WHERE uo.user_id = $1
+		ORDER BY uo.created_at ASC
+	`, id.UserID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var oid, oname, oslug, orole string
+			if scanErr := rows.Scan(&oid, &oname, &oslug, &orole); scanErr == nil {
+				orgs = append(orgs, map[string]any{
+					"id": oid, "name": oname, "slug": oslug, "role": orole,
+				})
+			}
+		}
+	}
+
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"id": id.UserID, "email": email, "full_name": fullName,
+		"id": id.UserID, "email": email, "full_name": fullName, "avatar_url": avatarURL,
 		"organization_id": id.OrganizationID, "org_name": orgName,
 		"role": id.Role, "mfa_enabled": mfaEnabled, "is_platform_admin": isPlatformAdmin,
+		"organizations": orgs,
 	})
+}
+
+func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
+	id, _ := FromContext(r.Context())
+	var req struct {
+		FullName        *string `json:"full_name"`
+		AvatarURL       *string `json:"avatar_url"`
+		CurrentPassword string  `json:"current_password"`
+		NewPassword     string  `json:"new_password"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if req.NewPassword != "" {
+		if len(req.NewPassword) < 8 || req.CurrentPassword == "" {
+			httpx.Error(w, http.StatusBadRequest, "current_password and new_password (>=8) are required")
+			return
+		}
+		var currentHash string
+		if err := h.Pool.QueryRow(r.Context(), `SELECT password_hash FROM users WHERE id = $1`, id.UserID).Scan(&currentHash); err != nil || !CheckPassword(currentHash, req.CurrentPassword) {
+			httpx.Error(w, http.StatusUnauthorized, "invalid current password")
+			return
+		}
+		newHash, err := HashPassword(req.NewPassword)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "failed to hash password")
+			return
+		}
+		if _, err := h.Pool.Exec(r.Context(), `UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, newHash, id.UserID); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "failed to update password")
+			return
+		}
+	}
+
+	if req.FullName != nil {
+		name := strings.TrimSpace(*req.FullName)
+		if name == "" {
+			httpx.Error(w, http.StatusBadRequest, "full_name cannot be empty")
+			return
+		}
+		if _, err := h.Pool.Exec(r.Context(), `UPDATE users SET full_name = $1, updated_at = now() WHERE id = $2`, name, id.UserID); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "failed to update full_name")
+			return
+		}
+	}
+
+	if req.AvatarURL != nil {
+		avatar := strings.TrimSpace(*req.AvatarURL)
+		if _, err := h.Pool.Exec(r.Context(), `UPDATE users SET avatar_url = NULLIF($1, ''), updated_at = now() WHERE id = $2`, avatar, id.UserID); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "failed to update avatar_url")
+			return
+		}
+	}
+
+	h.Me(w, r)
 }
 
 func (h *Handler) SetupMFA(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +470,30 @@ func (h *Handler) SetupMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = h.Pool.Exec(r.Context(), `UPDATE users SET mfa_secret = $1 WHERE id = $2`, key.Secret(), id.UserID)
 	httpx.JSON(w, http.StatusOK, map[string]any{"secret": key.Secret(), "otpauth_url": key.URL()})
+}
+
+func (h *Handler) replaceRecoveryCodes(r *http.Request, userID string) ([]string, error) {
+	codes, err := GenerateRecoveryCodes(8)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(r.Context())
+	if _, err := tx.Exec(r.Context(), `DELETE FROM user_recovery_codes WHERE user_id = $1 AND used_at IS NULL`, userID); err != nil {
+		return nil, err
+	}
+	for _, c := range codes {
+		if _, err := tx.Exec(r.Context(), `INSERT INTO user_recovery_codes (user_id, code_hash) VALUES ($1, $2)`, userID, HashToken(c)); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		return nil, err
+	}
+	return codes, nil
 }
 
 func (h *Handler) EnableMFA(w http.ResponseWriter, r *http.Request) {
@@ -304,9 +511,76 @@ func (h *Handler) EnableMFA(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "invalid totp code")
 		return
 	}
-	_, _ = h.Pool.Exec(r.Context(), `UPDATE users SET mfa_enabled = true WHERE id = $1`, id.UserID)
-	WriteAudit(r.Context(), h.Pool, id, "mfa.enable", "user", id.UserID, map[string]any{})
-	httpx.JSON(w, http.StatusOK, map[string]any{"mfa_enabled": true})
+	if _, err := h.Pool.Exec(r.Context(), `UPDATE users SET mfa_enabled = true, updated_at = now() WHERE id = $1`, id.UserID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	codes, err := h.replaceRecoveryCodes(r, id.UserID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "failed to generate recovery codes")
+		return
+	}
+	_ = WriteAudit(r.Context(), h.Pool, id, "mfa.enable", "user", id.UserID, map[string]any{})
+	httpx.JSON(w, http.StatusOK, map[string]any{"enabled": true, "mfa_enabled": true, "recovery_codes": codes})
+}
+
+func (h *Handler) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Request) {
+	id, _ := FromContext(r.Context())
+	var mfaEnabled bool
+	if err := h.Pool.QueryRow(r.Context(), `SELECT mfa_enabled FROM users WHERE id = $1`, id.UserID).Scan(&mfaEnabled); err != nil || !mfaEnabled {
+		httpx.Error(w, http.StatusBadRequest, "mfa is not enabled")
+		return
+	}
+	codes, err := h.replaceRecoveryCodes(r, id.UserID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "failed to generate recovery codes")
+		return
+	}
+	_ = WriteAudit(r.Context(), h.Pool, id, "mfa.recovery_codes.regenerate", "user", id.UserID, map[string]any{})
+	httpx.JSON(w, http.StatusOK, map[string]any{"recovery_codes": codes})
+}
+
+func (h *Handler) DisableMFA(w http.ResponseWriter, r *http.Request) {
+	id, _ := FromContext(r.Context())
+	var req struct {
+		Password string `json:"password"`
+		Code     string `json:"code"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	var pwHash, secret string
+	if err := h.Pool.QueryRow(r.Context(), `SELECT password_hash, COALESCE(mfa_secret, '') FROM users WHERE id = $1`, id.UserID).Scan(&pwHash, &secret); err != nil {
+		httpx.Error(w, http.StatusNotFound, "user not found")
+		return
+	}
+	validPW := req.Password != "" && CheckPassword(pwHash, req.Password)
+	validCode := req.Code != "" && secret != "" && totp.Validate(req.Code, secret)
+	if !validPW && !validCode {
+		httpx.Error(w, http.StatusUnauthorized, "invalid password or totp code")
+		return
+	}
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, err := tx.Exec(r.Context(), `UPDATE users SET mfa_enabled = false, mfa_secret = NULL, updated_at = now() WHERE id = $1`, id.UserID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `DELETE FROM user_recovery_codes WHERE user_id = $1 AND used_at IS NULL`, id.UserID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "commit failed")
+		return
+	}
+	_ = WriteAudit(r.Context(), h.Pool, id, "mfa.disable", "user", id.UserID, map[string]any{})
+	httpx.JSON(w, http.StatusOK, map[string]any{"enabled": false, "mfa_enabled": false})
 }
 
 func (h *Handler) ListAPITokens(w http.ResponseWriter, r *http.Request) {

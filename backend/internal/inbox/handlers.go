@@ -2,13 +2,20 @@ package inbox
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/auth"
+	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/config"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/httpx"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/realtime"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,10 +23,22 @@ type OutboundSender interface {
 	SendText(ctx context.Context, instanceName, phoneNumber, text string) error
 }
 
+type OutboundThrottle interface {
+	AllowOutbound(ctx context.Context, sessionID string, dailyLimit int) bool
+}
+
 type Handler struct {
 	Pool      *pgxpool.Pool
 	Hub       *realtime.Hub
 	Evolution OutboundSender
+	Throttle  OutboundThrottle
+	Cfg       config.Config
+}
+
+func (h *Handler) publish(orgID, evType string, payload any) {
+	if h.Hub != nil {
+		h.Hub.Publish(orgID, evType, payload)
+	}
 }
 
 func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
@@ -87,19 +106,161 @@ func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ClaimConversation(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	cid := chi.URLParam(r, "id")
+	var req struct {
+		ExpectedRevision *int `json:"expected_revision"`
+	}
+	if err := httpx.Decode(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
 	var newRev int
-	err := h.Pool.QueryRow(r.Context(), `
-		UPDATE conversations
-		SET status = 'claimed', assigned_to = $3, service_revision = service_revision + 1, unread_count = 0, updated_at = now()
-		WHERE id = $1 AND organization_id = $2
-		RETURNING service_revision
-	`, cid, id.OrganizationID, id.UserID).Scan(&newRev)
-	if err != nil {
+	var err error
+	if req.ExpectedRevision != nil {
+		err = h.Pool.QueryRow(r.Context(), `
+			UPDATE conversations
+			SET status = 'claimed', assigned_to = $3, service_revision = service_revision + 1, unread_count = 0, updated_at = now()
+			WHERE id = $1 AND organization_id = $2 AND service_revision = $4
+			RETURNING service_revision
+		`, cid, id.OrganizationID, id.UserID, *req.ExpectedRevision).Scan(&newRev)
+		if err != nil {
+			var curRev int
+			chkErr := h.Pool.QueryRow(r.Context(), `
+				SELECT service_revision FROM conversations WHERE id = $1 AND organization_id = $2
+			`, cid, id.OrganizationID).Scan(&curRev)
+			if chkErr != nil {
+				httpx.Error(w, http.StatusNotFound, "conversation not found")
+				return
+			}
+			httpx.JSON(w, http.StatusConflict, map[string]any{
+				"error":            "conversation_revision_conflict",
+				"current_revision": curRev,
+			})
+			return
+		}
+	} else {
+		err = h.Pool.QueryRow(r.Context(), `
+			UPDATE conversations
+			SET status = 'claimed', assigned_to = $3, service_revision = service_revision + 1, unread_count = 0, updated_at = now()
+			WHERE id = $1 AND organization_id = $2
+			RETURNING service_revision
+		`, cid, id.OrganizationID, id.UserID).Scan(&newRev)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, "conversation not found")
+			return
+		}
+	}
+
+	h.publish(id.OrganizationID, "conversation.updated", map[string]any{
+		"id": cid, "status": "claimed", "assigned_to": id.UserID, "service_revision": newRev,
+	})
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": "claimed", "assigned_to": id.UserID, "service_revision": newRev})
+}
+
+func (h *Handler) TransferConversation(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	cid := chi.URLParam(r, "id")
+	var req struct {
+		TargetUserID     string `json:"target_user_id"`
+		AgentID          string `json:"agent_id"`
+		AutoRoute        bool   `json:"auto_route"`
+		ExpectedRevision *int   `json:"expected_revision"`
+	}
+	if err := httpx.Decode(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	targetID := strings.TrimSpace(req.TargetUserID)
+	if targetID == "" {
+		targetID = strings.TrimSpace(req.AgentID)
+	}
+
+	// Verify conversation exists and check revision upfront before selecting target
+	var curRev int
+	if err := h.Pool.QueryRow(r.Context(), `
+		SELECT service_revision FROM conversations WHERE id = $1 AND organization_id = $2
+	`, cid, id.OrganizationID).Scan(&curRev); err != nil {
 		httpx.Error(w, http.StatusNotFound, "conversation not found")
 		return
 	}
-	h.Hub.Publish(id.OrganizationID, "conversation.updated", map[string]any{"id": cid, "status": "claimed", "assigned_to": id.UserID})
-	httpx.JSON(w, http.StatusOK, map[string]any{"status": "claimed", "service_revision": newRev})
+	if req.ExpectedRevision != nil && curRev != *req.ExpectedRevision {
+		httpx.JSON(w, http.StatusConflict, map[string]any{
+			"error":            "conversation_revision_conflict",
+			"current_revision": curRev,
+		})
+		return
+	}
+
+	if req.AutoRoute || targetID == "" {
+		// Round-robin auto-routing: available agents/managers/admins under max_concurrent_chats
+		err := h.Pool.QueryRow(r.Context(), `
+			SELECT uo.user_id
+			FROM user_organizations uo
+			LEFT JOIN conversations c
+				ON c.organization_id = uo.organization_id
+				AND c.assigned_to = uo.user_id
+				AND c.status = 'claimed'
+			WHERE uo.organization_id = $1
+			  AND uo.is_available = true
+			  AND uo.role IN ('agent', 'manager', 'admin')
+			GROUP BY uo.user_id, uo.max_concurrent_chats
+			HAVING COUNT(c.id) < uo.max_concurrent_chats
+			ORDER BY COUNT(c.id) ASC, MAX(c.updated_at) ASC NULLS FIRST, uo.user_id ASC
+			LIMIT 1
+		`, id.OrganizationID).Scan(&targetID)
+		if err != nil {
+			httpx.Error(w, http.StatusConflict, "no_available_agents")
+			return
+		}
+	} else {
+		var role string
+		err := h.Pool.QueryRow(r.Context(), `
+			SELECT role FROM user_organizations
+			WHERE organization_id = $1 AND user_id = $2 AND role IN ('agent', 'manager', 'admin')
+		`, id.OrganizationID, targetID).Scan(&role)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "target user is not an eligible agent in this organization")
+			return
+		}
+	}
+
+	var newRev int
+	var err error
+	if req.ExpectedRevision != nil {
+		err = h.Pool.QueryRow(r.Context(), `
+			UPDATE conversations
+			SET status = 'claimed', assigned_to = $3, service_revision = service_revision + 1, unread_count = 0, updated_at = now()
+			WHERE id = $1 AND organization_id = $2 AND service_revision = $4
+			RETURNING service_revision
+		`, cid, id.OrganizationID, targetID, *req.ExpectedRevision).Scan(&newRev)
+	} else {
+		err = h.Pool.QueryRow(r.Context(), `
+			UPDATE conversations
+			SET status = 'claimed', assigned_to = $3, service_revision = service_revision + 1, unread_count = 0, updated_at = now()
+			WHERE id = $1 AND organization_id = $2
+			RETURNING service_revision
+		`, cid, id.OrganizationID, targetID).Scan(&newRev)
+	}
+	if err != nil {
+		var latestRev int
+		if chkErr := h.Pool.QueryRow(r.Context(), `SELECT service_revision FROM conversations WHERE id = $1 AND organization_id = $2`, cid, id.OrganizationID).Scan(&latestRev); chkErr == nil {
+			httpx.JSON(w, http.StatusConflict, map[string]any{
+				"error":            "conversation_revision_conflict",
+				"current_revision": latestRev,
+			})
+			return
+		}
+		httpx.Error(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+
+	h.publish(id.OrganizationID, "conversation.updated", map[string]any{
+		"id": cid, "status": "claimed", "assigned_to": targetID, "service_revision": newRev,
+	})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id": cid, "status": "claimed", "assigned_to": targetID, "service_revision": newRev,
+	})
 }
 
 func (h *Handler) ResolveConversation(w http.ResponseWriter, r *http.Request) {
@@ -112,15 +273,15 @@ func (h *Handler) ResolveConversation(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "" {
 		req.Status = "resolved"
 	}
-	_, err := h.Pool.Exec(r.Context(), `
+	tag, err := h.Pool.Exec(r.Context(), `
 		UPDATE conversations SET status = $3, service_revision = service_revision + 1, updated_at = now()
 		WHERE id = $1 AND organization_id = $2
 	`, cid, id.OrganizationID, req.Status)
-	if err != nil {
+	if err != nil || tag.RowsAffected() == 0 {
 		httpx.Error(w, http.StatusNotFound, "conversation not found")
 		return
 	}
-	h.Hub.Publish(id.OrganizationID, "conversation.updated", map[string]any{"id": cid, "status": req.Status})
+	h.publish(id.OrganizationID, "conversation.updated", map[string]any{"id": cid, "status": req.Status})
 	httpx.JSON(w, http.StatusOK, map[string]any{"status": req.Status})
 }
 
@@ -157,67 +318,112 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	cid := chi.URLParam(r, "id")
 	var req struct {
 		Body        string `json:"body"`
-		ContentType string `json:"content_type"` // text | note
+		ContentType string `json:"content_type"` // text | image | audio | document | location | note
+		MediaURL    string `json:"media_url"`
 	}
-	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Body) == "" {
-		httpx.Error(w, http.StatusBadRequest, "body required")
+	if err := httpx.Decode(r, &req); err != nil || (strings.TrimSpace(req.Body) == "" && strings.TrimSpace(req.MediaURL) == "") {
+		httpx.Error(w, http.StatusBadRequest, "body or media_url required")
 		return
 	}
 	if req.ContentType == "" {
 		req.ContentType = "text"
 	}
+	switch req.ContentType {
+	case "text", "image", "audio", "document", "location", "note":
+	default:
+		httpx.Error(w, http.StatusBadRequest, "invalid content_type")
+		return
+	}
 
 	var isBlocked bool
-	var contactID string
+	var contactID, channelSessionID, sname, prov, phone string
+	var lastInboundAt *time.Time
+	var warmupLimit int
+	var businessHours map[string]any
 	err := h.Pool.QueryRow(r.Context(), `
-		SELECT c.is_blocked, c.id FROM conversations conv
+		SELECT c.is_blocked, c.id, conv.last_inbound_at,
+		       COALESCE(conv.channel_session_id::text, ''), COALESCE(cs.session_name, ''),
+		       COALESCE(cs.provider, ''), COALESCE(c.phone_number, ''),
+		       COALESCE(cs.warmup_daily_limit, 100), cs.business_hours
+		FROM conversations conv
 		JOIN contacts c ON c.id = conv.contact_id
+		LEFT JOIN channel_sessions cs ON cs.id = conv.channel_session_id
 		WHERE conv.id = $1 AND conv.organization_id = $2
-	`, cid, id.OrganizationID).Scan(&isBlocked, &contactID)
+	`, cid, id.OrganizationID).Scan(&isBlocked, &contactID, &lastInboundAt, &channelSessionID, &sname, &prov, &phone, &warmupLimit, &businessHours)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "conversation not found")
 		return
 	}
-	if isBlocked && req.ContentType != "note" {
-		httpx.Error(w, http.StatusUnprocessableEntity, "contact opted out (STOP)")
-		return
+
+	isNote := req.ContentType == "note"
+	if !isNote {
+		if isBlocked {
+			httpx.Error(w, http.StatusUnprocessableEntity, "contact opted out (STOP)")
+			return
+		}
+		if channelSessionID != "" {
+			if lastInboundAt == nil || time.Since(*lastInboundAt) > 24*time.Hour {
+				httpx.JSON(w, http.StatusUnprocessableEntity, map[string]any{
+					"error": "whatsapp_24h_window_expired",
+					"code":  "WINDOW_24H_EXPIRED",
+				})
+				return
+			}
+			if !CheckBusinessHours(businessHours, time.Now()) {
+				httpx.Error(w, http.StatusUnprocessableEntity, "outside_business_hours")
+				return
+			}
+			if h.Throttle != nil && !h.Throttle.AllowOutbound(r.Context(), channelSessionID, warmupLimit) {
+				httpx.Error(w, http.StatusTooManyRequests, "daily_warmup_limit_reached")
+				return
+			}
+		}
 	}
 
 	// Chunk messages > 4096 chars per WhatsApp limits
 	chunks := chunkText(req.Body, 4096)
 	var lastID string
-	for _, chunk := range chunks {
-		_ = h.Pool.QueryRow(r.Context(), `
-			INSERT INTO messages (organization_id, conversation_id, direction, sender_type, sender_user_id, content_type, body, status)
-			VALUES ($1, $2, 'outbound', 'human', $3, $4, $5, 'sent') RETURNING id
-		`, id.OrganizationID, cid, id.UserID, req.ContentType, chunk).Scan(&lastID)
+	for i, chunk := range chunks {
+		mediaArg := ""
+		if i == 0 {
+			mediaArg = strings.TrimSpace(req.MediaURL)
+		}
+		err := h.Pool.QueryRow(r.Context(), `
+			INSERT INTO messages (organization_id, conversation_id, direction, sender_type, sender_user_id, content_type, body, media_url, status)
+			VALUES ($1, $2, 'outbound', 'human', $3, $4, $5, NULLIF($6, ''), 'sent') RETURNING id
+		`, id.OrganizationID, cid, id.UserID, req.ContentType, chunk, mediaArg).Scan(&lastID)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "failed to save message")
+			return
+		}
 	}
 
-	if h.Evolution != nil && req.ContentType == "text" {
-		var sname, prov, phone string
-		_ = h.Pool.QueryRow(r.Context(), `
-			SELECT COALESCE(cs.session_name,''), COALESCE(cs.provider,''), COALESCE(c.phone_number,'')
-			FROM conversations conv
-			JOIN contacts c ON c.id = conv.contact_id
-			LEFT JOIN channel_sessions cs ON cs.id = conv.channel_session_id
-			WHERE conv.id = $1
-		`, cid).Scan(&sname, &prov, &phone)
-		if prov == "evolution_go" && sname != "" && phone != "" {
-			for _, chunk := range chunks {
+	if !isNote && h.Evolution != nil && prov == "evolution_go" && sname != "" && phone != "" {
+		for _, chunk := range chunks {
+			if chunk != "" {
 				_ = h.Evolution.SendText(r.Context(), sname, phone, chunk)
 			}
 		}
 	}
 
-	preview := req.Body
-	if len(preview) > 80 {
-		preview = preview[:80] + "..."
+	if !isNote {
+		preview := req.Body
+		if preview == "" && req.MediaURL != "" {
+			preview = "[media]"
+		}
+		preview = TruncateRunes(preview, 80)
+		_, _ = h.Pool.Exec(r.Context(), `UPDATE conversations SET last_message_at=now(), last_message_preview=$1, updated_at=now() WHERE id=$2`, preview, cid)
+	} else {
+		_, _ = h.Pool.Exec(r.Context(), `UPDATE conversations SET updated_at=now() WHERE id=$1`, cid)
 	}
-	_, _ = h.Pool.Exec(r.Context(), `UPDATE conversations SET last_message_at=now(), last_message_preview=$1, updated_at=now() WHERE id=$2`, preview, cid)
-	h.Hub.Publish(id.OrganizationID, "message.created", map[string]any{
-		"id": lastID, "conversation_id": cid, "direction": "outbound", "sender_type": "human", "content_type": req.ContentType, "body": req.Body,
+
+	h.publish(id.OrganizationID, "message.created", map[string]any{
+		"id": lastID, "conversation_id": cid, "direction": "outbound", "sender_type": "human",
+		"content_type": req.ContentType, "body": req.Body, "media_url": req.MediaURL,
 	})
-	httpx.JSON(w, http.StatusCreated, map[string]any{"id": lastID, "chunks": len(chunks), "status": "sent"})
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"id": lastID, "chunks": len(chunks), "status": "sent", "media_url": req.MediaURL,
+	})
 }
 
 func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
@@ -261,13 +467,71 @@ func (h *Handler) CreateTemplate(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusConflict, "shortcut already exists")
 		return
 	}
-	httpx.JSON(w, http.StatusCreated, map[string]any{"id": tid, "shortcut": req.Shortcut, "title": req.Title, "body": req.Body})
+	httpx.JSON(w, http.StatusCreated, map[string]any{"id": tid, "shortcut": req.Shortcut, "title": req.Title, "category": req.Category, "body": req.Body})
+}
+
+func (h *Handler) UpdateTemplate(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	tid := chi.URLParam(r, "id")
+	var req struct {
+		Shortcut *string `json:"shortcut"`
+		Title    *string `json:"title"`
+		Category *string `json:"category"`
+		Body     *string `json:"body"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	var sc, title, cat, body string
+	err := h.Pool.QueryRow(r.Context(), `
+		UPDATE message_templates SET
+			shortcut = COALESCE(NULLIF($3, ''), shortcut),
+			title = COALESCE($4, title),
+			category = COALESCE(NULLIF($5, ''), category),
+			body = COALESCE(NULLIF($6, ''), body)
+		WHERE id = $1 AND organization_id = $2
+		RETURNING shortcut, title, category, body
+	`, tid, id.OrganizationID, req.Shortcut, req.Title, req.Category, req.Body).Scan(&sc, &title, &cat, &body)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			httpx.Error(w, http.StatusConflict, "shortcut already exists")
+			return
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Error(w, http.StatusNotFound, "template not found")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id": tid, "shortcut": sc, "title": title, "category": cat, "body": body,
+	})
+}
+
+func (h *Handler) DeleteTemplate(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	tid := chi.URLParam(r, "id")
+	tag, err := h.Pool.Exec(r.Context(), `DELETE FROM message_templates WHERE id = $1 AND organization_id = $2`, tid, id.OrganizationID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		httpx.Error(w, http.StatusNotFound, "template not found")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (h *Handler) Radar(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	rows, err := h.Pool.Query(r.Context(), `
-		SELECT conv.id, c.name, COALESCE(c.phone_number,''), conv.status, conv.last_message_at, COALESCE(conv.last_message_preview,'')
+		SELECT conv.id, c.name, COALESCE(c.phone_number,''), conv.status, conv.service_revision,
+		       conv.last_inbound_at, conv.last_message_at, COALESCE(conv.last_message_preview,'')
 		FROM conversations conv
 		JOIN contacts c ON c.id = conv.contact_id
 		WHERE conv.organization_id = $1 AND conv.status IN ('open','pending','claimed')
@@ -281,24 +545,91 @@ func (h *Handler) Radar(w http.ResponseWriter, r *http.Request) {
 	out := []map[string]any{}
 	for rows.Next() {
 		var cid, name, phone, status, preview string
-		var lastAt any
-		_ = rows.Scan(&cid, &name, &phone, &status, &lastAt, &preview)
-		out = append(out, map[string]any{"id": cid, "contact_name": name, "contact_phone": phone, "status": status, "last_message_at": lastAt, "last_message_preview": preview})
+		var rev int
+		var lastInbound, lastAt any
+		_ = rows.Scan(&cid, &name, &phone, &status, &rev, &lastInbound, &lastAt, &preview)
+		out = append(out, map[string]any{
+			"id": cid, "contact_name": name, "contact_phone": phone, "status": status,
+			"service_revision": rev, "last_inbound_at": lastInbound,
+			"last_message_at": lastAt, "last_message_preview": preview,
+		})
 	}
 	httpx.JSON(w, http.StatusOK, out)
 }
 
-func chunkText(s string, max int) []string {
-	if len(s) <= max {
+// ChunkText splits s into chunks of at most max UTF-8 runes without splitting multi-byte characters.
+func ChunkText(s string, max int) []string {
+	if max <= 0 {
+		return []string{s}
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
 		return []string{s}
 	}
 	var res []string
-	for len(s) > max {
-		res = append(res, s[:max])
-		s = s[max:]
+	for len(runes) > max {
+		res = append(res, string(runes[:max]))
+		runes = runes[max:]
 	}
-	if len(s) > 0 {
-		res = append(res, s)
+	if len(runes) > 0 {
+		res = append(res, string(runes))
 	}
 	return res
+}
+
+func chunkText(s string, max int) []string {
+	return ChunkText(s, max)
+}
+
+// TruncateRunes truncates s to at most max UTF-8 runes and appends "..." if truncated.
+func TruncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "..."
+}
+
+// CheckBusinessHours checks whether `now` falls within business_hours {"start": "HH:MM", "end": "HH:MM", "timezone": "IANA"}.
+func CheckBusinessHours(bh map[string]any, now time.Time) bool {
+	if len(bh) == 0 {
+		return true
+	}
+	startStr, _ := bh["start"].(string)
+	endStr, _ := bh["end"].(string)
+	if startStr == "" || endStr == "" {
+		return true
+	}
+	startMins, ok1 := parseHHMM(startStr)
+	endMins, ok2 := parseHHMM(endStr)
+	if !ok1 || !ok2 {
+		return true
+	}
+
+	loc := time.UTC
+	if tz, _ := bh["timezone"].(string); tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+	localNow := now.In(loc)
+	curMins := localNow.Hour()*60 + localNow.Minute()
+	if startMins <= endMins {
+		return curMins >= startMins && curMins <= endMins
+	}
+	// Overnight wrap (e.g. 22:00 to 06:00)
+	return curMins >= startMins || curMins <= endMins
+}
+
+func parseHHMM(s string) (int, bool) {
+	parts := strings.Split(strings.TrimSpace(s), ":")
+	if len(parts) != 2 {
+		return 0, false
+	}
+	h, err1 := strconv.Atoi(parts[0])
+	m, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+		return 0, false
+	}
+	return h*60 + m, true
 }

@@ -88,6 +88,18 @@ export function setSupportSession(session: SupportSession | null) {
   window.dispatchEvent(new CustomEvent(SUPPORT_SESSION_EVENT, { detail: session }));
 }
 
+export class ApiError extends Error {
+  status: number;
+  code: string;
+
+  constructor(message: string, status: number, code = '') {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 function formatApiError(code: string, fallback: string): string {
   switch (code) {
     case 'support_session_invalid':
@@ -109,16 +121,99 @@ function formatApiError(code: string, fallback: string): string {
       return 'Error al registrar auditoría.';
     case 'db error':
       return 'Error de base de datos.';
+    case 'invalid email or password':
+      return 'Correo o contraseña incorrectos.';
+    case 'invalid totp code':
+    case 'invalid_mfa_code':
+      return 'Código de verificación inválido.';
+    case 'invalid_recovery_code':
+    case 'invalid or used recovery code':
+      return 'Código de recuperación inválido o ya utilizado.';
+    case 'invalid_token':
+    case 'invalid token':
+      return 'El enlace o token no es válido.';
+    case 'token_expired':
+    case 'invite_expired':
+    case 'invite expired':
+      return 'La invitación o enlace ha expirado.';
+    case 'already_accepted':
+    case 'invite_already_accepted':
+    case 'invite already accepted':
+      return 'Esta invitación ya fue aceptada.';
+    case 'email already registered':
+      return 'Este correo electrónico ya está registrado.';
+    case 'cannot demote the last admin':
+      return 'No puedes degradar al último administrador de la organización.';
+    case 'cannot remove the last admin':
+      return 'No puedes eliminar al último administrador de la organización.';
+    case 'insufficient role':
+      return 'No tienes permisos suficientes para realizar esta acción.';
+    case 'idempotency_conflict_in_progress':
+      return 'Solicitud en progreso. Por favor espera un momento e intenta de nuevo.';
+    case 'revision_conflict':
+    case 'service_revision_conflict':
+    case 'conversation_revision_conflict':
+      return 'La conversación fue modificada por otro agente. Actualizando...';
+    case 'shortcut already exists':
+      return 'Ya existe una plantilla con ese atajo.';
+    case 'contact opted out (STOP)':
+      return 'El contacto solicitó darse de baja (STOP).';
+    case 'version_conflict':
+    case 'lead modified concurrently':
+      return 'Este registro fue modificado por otro usuario. Actualizando datos...';
+    case 'bulk_limit_exceeded':
+    case 'bulk move limited to 50 leads':
+      return 'La acción masiva está limitada a un máximo de 50 registros a la vez.';
+    case 'cannot delete stage with existing leads':
+      return 'No puedes eliminar una etapa que aún tiene leads asignados.';
+    case 'cannot_link_self':
+      return 'No puedes vincular un lead consigo mismo.';
+    case 'link_already_exists':
+      return 'Este vínculo ya existe.';
     default:
       return code || fallback;
   }
 }
 
-export async function apiFetch<T = any>(path: string, init: RequestInit = {}): Promise<T> {
+export interface ApiFetchOptions extends RequestInit {
+  idempotencyKey?: string;
+}
+
+const SKIP_REFRESH_PATHS = [
+  '/auth/login',
+  '/auth/signup',
+  '/auth/forgot',
+  '/auth/reset',
+  '/auth/mfa/verify',
+  '/team/accept-invite',
+];
+
+function shouldSkipRefresh(path: string): boolean {
+  if (SKIP_REFRESH_PATHS.includes(path)) return true;
+  if (path.startsWith('/team/invites/')) return true;
+  return false;
+}
+
+async function parseResponseBody<T>(res: Response): Promise<T> {
+  if (res.status === 204) {
+    return undefined as T;
+  }
+  const text = await res.text();
+  if (!text) {
+    return undefined as T;
+  }
+  return JSON.parse(text) as T;
+}
+
+export async function apiFetch<T = any>(path: string, init: ApiFetchOptions = {}): Promise<T> {
+  const { idempotencyKey, ...fetchInit } = init;
   const token = getToken();
-  const headers = new Headers(init.headers || {});
-  if (!headers.has('Content-Type') && init.body && typeof init.body === 'string') {
+  const headers = new Headers(fetchInit.headers || {});
+  if (!headers.has('Content-Type') && fetchInit.body && typeof fetchInit.body === 'string') {
     headers.set('Content-Type', 'application/json');
+  }
+  if (idempotencyKey && !headers.has('Idempotency-Key')) {
+    headers.set('Idempotency-Key', idempotencyKey);
   }
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
@@ -131,25 +226,25 @@ export async function apiFetch<T = any>(path: string, init: RequestInit = {}): P
   }
 
   const res = await fetch(`/api/v1${path}`, {
-    ...init,
+    ...fetchInit,
     headers,
     credentials: 'include',
   });
-  if (res.status === 401 && path !== '/auth/login' && path !== '/auth/signup') {
+  if (res.status === 401 && !shouldSkipRefresh(path)) {
     const ref = await fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' });
     if (ref.ok) {
       const data = await ref.json();
       setToken(data.access_token);
       headers.set('Authorization', `Bearer ${data.access_token}`);
-      const retry = await fetch(`/api/v1${path}`, { ...init, headers, credentials: 'include' });
+      const retry = await fetch(`/api/v1${path}`, { ...fetchInit, headers, credentials: 'include' });
       if (!retry.ok) {
         const err = await retry.json().catch(() => ({ error: retry.statusText }));
         if (retry.status === 403 && err.error === 'support_session_invalid') {
           setSupportSession(null);
         }
-        throw new Error(formatApiError(err.error, retry.statusText));
+        throw new ApiError(formatApiError(err.error, retry.statusText), retry.status, err.error || '');
       }
-      return retry.json();
+      return parseResponseBody<T>(retry);
     }
     setToken(null);
   }
@@ -158,9 +253,9 @@ export async function apiFetch<T = any>(path: string, init: RequestInit = {}): P
     if (res.status === 403 && err.error === 'support_session_invalid') {
       setSupportSession(null);
     }
-    throw new Error(formatApiError(err.error, res.statusText));
+    throw new ApiError(formatApiError(err.error, res.statusText), res.status, err.error || '');
   }
-  return res.json();
+  return parseResponseBody<T>(res);
 }
 
 export function fetchAdminMetrics(): Promise<AdminMetrics> {
@@ -292,12 +387,54 @@ export interface ChannelSession {
   created_at: string;
 }
 
-export function subscribeSSE(onEvent: (eventType: string, data: any) => void): () => void {
-  const controller = new AbortController();
+export type SSEStatus = 'connecting' | 'connected' | 'reconnecting' | 'offline';
+
+export interface SubscribeSSEOptions {
+  onStatusChange?: (status: SSEStatus) => void;
+}
+
+export function subscribeSSE(
+  onEvent: (eventType: string, data: any) => void,
+  options?: SubscribeSSEOptions
+): () => void {
+  let closed = false;
+  let attempt = 0;
+  let timer: number | undefined;
+  let controller: AbortController | null = null;
+
+  const setStatus = (s: SSEStatus) => {
+    if (!closed) options?.onStatusChange?.(s);
+  };
+
+  const scheduleReconnect = () => {
+    if (closed) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setStatus('offline');
+      return;
+    }
+    setStatus('reconnecting');
+    const baseDelay = Math.min(30000, 1000 * Math.pow(2, attempt));
+    const jitter = Math.floor(Math.random() * 400);
+    attempt += 1;
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      if (!closed) void connect();
+    }, baseDelay + jitter);
+  };
 
   async function connect() {
+    if (closed) return;
     const token = getToken();
     if (!token) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setStatus('offline');
+      return;
+    }
+
+    controller?.abort();
+    controller = new AbortController();
+    setStatus(attempt === 0 ? 'connecting' : 'reconnecting');
+
     const headers = new Headers();
     headers.set('Authorization', `Bearer ${token}`);
     const support = getSupportSession();
@@ -310,13 +447,19 @@ export function subscribeSSE(onEvent: (eventType: string, data: any) => void): (
         headers,
         signal: controller.signal,
       });
-      if (!res.ok || !res.body) return;
+      if (!res.ok || !res.body) {
+        scheduleReconnect();
+        return;
+      }
+      attempt = 0;
+      setStatus('connected');
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let currentEvent = 'message';
 
-      while (true) {
+      while (!closed) {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -341,11 +484,39 @@ export function subscribeSSE(onEvent: (eventType: string, data: any) => void): (
           }
         }
       }
+      if (!closed) {
+        scheduleReconnect();
+      }
     } catch {
-      // Aborted or network disconnected
+      if (!closed) {
+        scheduleReconnect();
+      }
     }
   }
 
-  connect();
-  return () => controller.abort();
+  const handleOnline = () => {
+    if (closed) return;
+    window.clearTimeout(timer);
+    attempt = 0;
+    void connect();
+  };
+
+  const handleOffline = () => {
+    if (closed) return;
+    window.clearTimeout(timer);
+    controller?.abort();
+    setStatus('offline');
+  };
+
+  window.addEventListener('online', handleOnline);
+  window.addEventListener('offline', handleOffline);
+  void connect();
+
+  return () => {
+    closed = true;
+    window.clearTimeout(timer);
+    controller?.abort();
+    window.removeEventListener('online', handleOnline);
+    window.removeEventListener('offline', handleOffline);
+  };
 }

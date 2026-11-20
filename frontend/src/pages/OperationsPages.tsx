@@ -230,68 +230,9 @@ export function WebhooksPage() {
   );
 }
 
-export function TasksPage() {
-  const [tasks, setTasks] = useState<any[]>([]);
-  const [title, setTitle] = useState('');
-  const load = () => apiFetch('/tasks').then(setTasks);
-  useEffect(() => { load(); }, []);
 
-  async function add(e: React.FormEvent) {
-    e.preventDefault();
-    await apiFetch('/tasks', { method: 'POST', body: JSON.stringify({ title }) });
-    setTitle('');
-    load();
-  }
 
-  return (
-    <div className="p-4 md:p-6 space-y-4 max-w-3xl">
-      <h1 className="text-xl font-bold">Tareas</h1>
-      <form onSubmit={add} className="flex gap-2">
-        <Input required placeholder="Hacer seguimiento con el cliente..." value={title} onChange={(e) => setTitle(e.target.value)} />
-        <Button type="submit">Agregar Tarea</Button>
-      </form>
-      <div className="space-y-2">
-        {tasks.map((t) => (
-          <Card key={t.id} className="p-3 flex items-center justify-between">
-            <span className={`text-sm ${t.status === 'done' ? 'line-through text-[var(--text-muted)]' : 'font-medium'}`}>{t.title}</span>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => apiFetch(`/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: t.status === 'done' ? 'pending' : 'done' }) }).then(load)}
-            >
-              {t.status === 'done' ? 'Reabrir' : 'Completar'}
-            </Button>
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-export function RadarPage() {
-  const [items, setItems] = useState<any[]>([]);
-  useEffect(() => { apiFetch('/radar').then(setItems); }, []);
-  return (
-    <div className="p-4 md:p-6 space-y-4 max-w-4xl">
-      <h1 className="text-xl font-bold">Radar (Conversaciones enfriándose)</h1>
-      <div className="space-y-2">
-        {items.length === 0 ? (
-          <Card className="p-6 text-center text-xs text-[var(--text-muted)]">Todas las conversaciones están al día.</Card>
-        ) : (
-          items.map((i) => (
-            <Card key={i.id} className="p-3.5 flex items-center justify-between">
-              <div>
-                <div className="font-semibold text-sm">{i.contact_name}</div>
-                <div className="text-xs text-[var(--text-muted)]">{i.last_message_preview || 'Esperando respuesta'}</div>
-              </div>
-              <Badge tone="warning">{i.status}</Badge>
-            </Card>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
+export { RadarPage } from './RadarPage';
 
 export function MetricsPage() {
   const [m, setM] = useState<any>(null);
@@ -319,90 +260,252 @@ export function MetricsPage() {
   );
 }
 
+import { Sheet } from '../components/ui/primitives';
+
 export function LGPDPage() {
   const [reqs, setReqs] = useState<any[]>([]);
+  const [contacts, setContacts] = useState<any[]>([]);
   const [audit, setAudit] = useState<any[]>([]);
-  const load = () => Promise.all([apiFetch('/lgpd/requests').then(setReqs), apiFetch('/audit').then(setAudit)]);
-  useEffect(() => { load(); }, []);
+  const [contactId, setContactId] = useState('');
+  const [requestType, setRequestType] = useState<'export' | 'redact'>('export');
+  const [reason, setReason] = useState('');
+  const [confirmRedactReq, setConfirmRedactReq] = useState<any | null>(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
-  return (
-    <div className="p-4 md:p-6 space-y-6 max-w-4xl">
-      <h1 className="text-xl font-bold">Cumplimiento LGPD y Auditoría Inmutable</h1>
-      <Card className="p-4 space-y-2">
-        <div className="font-semibold text-sm">Solicitudes LGPD de Exportación / Borrado ({reqs.length})</div>
-        {reqs.map((r) => (
-          <div key={r.id} className="flex items-center justify-between text-xs py-1.5 border-b border-[var(--border)]">
-            <span>{r.contact_name} — {r.request_type}</span>
-            <div className="flex items-center gap-2">
-              <Badge tone={r.status === 'completed' ? 'success' : 'warning'}>{r.status}</Badge>
-              {r.status === 'pending' && (
-                <Button size="sm" onClick={() => apiFetch(`/lgpd/requests/${r.id}/execute`, { method: 'POST' }).then(load)}>Ejecutar</Button>
-              )}
-            </div>
-          </div>
-        ))}
-      </Card>
-      <Card className="p-4 space-y-2">
-        <div className="font-semibold text-sm">Registro Reciente de Auditoría</div>
-        {audit.slice(0, 15).map((a) => (
-          <div key={a.id} className="text-xs flex justify-between py-1 border-b border-[var(--border)] last:border-0">
-            <span className="font-mono">{a.action} ({a.resource_type})</span>
-            <span className="text-[var(--text-muted)]">{new Date(a.created_at).toLocaleString()}</span>
-          </div>
-        ))}
-      </Card>
-    </div>
-  );
-}
+  const load = async () => {
+    try {
+      const [r, a, c] = await Promise.all([
+        apiFetch<any[]>('/lgpd/requests'),
+        apiFetch<any[]>('/audit'),
+        apiFetch<any[]>('/contacts').catch(() => []),
+      ]);
+      setReqs(r || []);
+      setAudit(a || []);
+      setContacts(c || []);
+    } catch (err: any) {
+      setError(err.message || 'Error al cargar datos LGPD.');
+    }
+  };
 
-export function SettingsPage() {
-  const [tokens, setTokens] = useState<any[]>([]);
-  const [team, setTeam] = useState<any[]>([]);
-  const [tokName, setTokName] = useState('');
-  const [newTok, setNewTok] = useState('');
-  const load = () => Promise.all([apiFetch('/api-tokens').then(setTokens), apiFetch('/team').then(setTeam)]);
-  useEffect(() => { load(); }, []);
-
-  async function createToken(e: React.FormEvent) {
-    e.preventDefault();
-    const res = await apiFetch('/api-tokens', { method: 'POST', body: JSON.stringify({ name: tokName }) });
-    setNewTok(res.token);
-    setTokName('');
+  useEffect(() => {
     load();
+  }, []);
+
+  async function createRequest(e: React.FormEvent) {
+    e.preventDefault();
+    if (!contactId) return;
+    setError('');
+    setNotice('');
+    try {
+      await apiFetch('/lgpd/requests', {
+        method: 'POST',
+        body: JSON.stringify({
+          contact_id: contactId,
+          request_type: requestType,
+          reason: reason.trim() || undefined,
+        }),
+      });
+      setReason('');
+      setNotice('Solicitud LGPD creada correctamente.');
+      await load();
+    } catch (err: any) {
+      setError(err.message || 'No se pudo crear la solicitud.');
+    }
+  }
+
+  async function executeExport(r: any) {
+    setError('');
+    setNotice('');
+    try {
+      const res = await apiFetch<any>(`/lgpd/requests/${r.id}/execute`, { method: 'POST' });
+      const blob = new Blob([JSON.stringify(res, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `lgpd-export-${r.contact_id || r.id}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setNotice('Exportación LGPD ejecutada y descargada en formato JSON.');
+      await load();
+    } catch (err: any) {
+      setError(err.message || 'No se pudo ejecutar la exportación.');
+    }
+  }
+
+  async function executeRedact(r: any) {
+    setError('');
+    setNotice('');
+    try {
+      await apiFetch(`/lgpd/requests/${r.id}/execute`, { method: 'POST' });
+      setConfirmRedactReq(null);
+      setNotice('Anonimización en cascada completada.');
+      await load();
+    } catch (err: any) {
+      setError(err.message || 'No se pudo ejecutar la anonimización.');
+    }
+  }
+
+  async function rejectRequest(r: any) {
+    setError('');
+    setNotice('');
+    try {
+      await apiFetch(`/lgpd/requests/${r.id}/reject`, { method: 'POST' });
+      setNotice('Solicitud rechazada.');
+      await load();
+    } catch (err: any) {
+      setError(err.message || 'No se pudo rechazar la solicitud.');
+    }
   }
 
   return (
-    <div className="p-4 md:p-6 space-y-6 max-w-4xl">
-      <h1 className="text-xl font-bold">Configuración, Equipo y Tokens MCP</h1>
+    <div className="p-4 md:p-6 space-y-6 max-w-4xl min-w-0">
+      <div>
+        <h1 className="text-xl font-bold">Cumplimiento LGPD y Auditoría Inmutable</h1>
+        <p className="text-xs text-[var(--text-muted)]">
+          Gestión de solicitudes de exportación JSON y anonimización en cascada
+        </p>
+      </div>
+
+      {error && (
+        <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-[var(--danger)]">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900">
+          {notice}
+        </div>
+      )}
+
+      {/* Crear solicitud LGPD */}
       <Card className="p-4 space-y-3">
-        <div className="font-semibold text-sm">Tokens API para MCP Nativo en Go / REST</div>
-        <form onSubmit={createToken} className="flex gap-2 max-w-md">
-          <Input required placeholder="Nombre del token (ej. Claude MCP)" value={tokName} onChange={(e) => setTokName(e.target.value)} />
-          <Button type="submit">Generar</Button>
+        <div className="font-semibold text-sm">Nueva Solicitud LGPD</div>
+        <form onSubmit={createRequest} className="flex flex-wrap gap-2">
+          <select
+            required
+            value={contactId}
+            onChange={(e) => setContactId(e.target.value)}
+            className="h-10 flex-1 min-w-[180px] rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-3 text-sm"
+          >
+            <option value="">Selecciona un contacto...</option>
+            {contacts.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name || c.full_name || c.phone || c.email || c.id}
+              </option>
+            ))}
+          </select>
+          <select
+            value={requestType}
+            onChange={(e) => setRequestType(e.target.value as 'export' | 'redact')}
+            className="h-10 rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-3 text-sm"
+          >
+            <option value="export">Exportar datos (JSON)</option>
+            <option value="redact">Anonimizar en cascada</option>
+          </select>
+          <Input
+            className="flex-1 min-w-[160px]"
+            placeholder="Motivo (opcional)"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
+          <Button type="submit">Crear solicitud</Button>
         </form>
-        {newTok && (
-          <div className="p-3 rounded-lg bg-teal-50 border border-teal-200 text-xs">
-            Cópialo ahora (solo se muestra una vez): <code className="font-mono font-bold break-all">{newTok}</code>
+      </Card>
+
+      {/* Cola de solicitudes LGPD */}
+      <Card className="p-4 space-y-3">
+        <div className="font-semibold text-sm">
+          Solicitudes LGPD de Exportación / Anonimización ({reqs.length})
+        </div>
+        {reqs.length === 0 ? (
+          <div className="text-xs text-[var(--text-muted)] py-2">No hay solicitudes registradas.</div>
+        ) : (
+          <div className="space-y-2">
+            {reqs.map((r) => {
+              const isRedact = r.request_type === 'redact';
+              return (
+                <div
+                  key={r.id}
+                  className="flex flex-wrap items-center justify-between gap-2 text-xs py-2.5 border-b border-[var(--border)] last:border-0"
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">
+                      {r.contact_name || r.contact_id} —{' '}
+                      <span className="font-mono">{r.request_type}</span>
+                    </div>
+                    {r.reason && (
+                      <div className="text-[11px] text-[var(--text-muted)] truncate">{r.reason}</div>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      tone={
+                        r.status === 'completed'
+                          ? 'success'
+                          : r.status === 'rejected'
+                            ? 'danger'
+                            : 'warning'
+                      }
+                    >
+                      {r.status}
+                    </Badge>
+                    {r.status === 'pending' && (
+                      <>
+                        {isRedact ? (
+                          <Button size="sm" variant="danger" onClick={() => setConfirmRedactReq(r)}>
+                            Anonimizar
+                          </Button>
+                        ) : (
+                          <Button size="sm" onClick={() => executeExport(r)}>
+                            Exportar JSON
+                          </Button>
+                        )}
+                        <Button size="sm" variant="secondary" onClick={() => rejectRequest(r)}>
+                          Rechazar
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
-        <div className="space-y-1.5">
-          {tokens.map((t) => (
-            <div key={t.id} className="flex items-center justify-between text-xs py-1.5 border-b border-[var(--border)]">
-              <span className="font-medium">{t.name}</span>
-              <Button size="sm" variant="danger" onClick={() => apiFetch(`/api-tokens/${t.id}`, { method: 'DELETE' }).then(load)}>Revocar</Button>
-            </div>
-          ))}
-        </div>
       </Card>
+
       <Card className="p-4 space-y-2">
-        <div className="font-semibold text-sm">Miembros del Equipo ({team.length})</div>
-        {team.map((m) => (
-          <div key={m.id} className="flex items-center justify-between text-xs py-1.5 border-b border-[var(--border)] last:border-0">
-            <span>{m.full_name} ({m.email})</span>
-            <Badge tone="accent">{m.role}</Badge>
+        <div className="font-semibold text-sm">Registro Reciente de Auditoría</div>
+        {audit.slice(0, 15).map((a) => (
+          <div key={a.id} className="text-xs flex flex-wrap justify-between gap-2 py-1 border-b border-[var(--border)] last:border-0">
+            <span className="font-mono">{a.action} ({a.resource_type})</span>
+            <span className="text-[var(--text-muted)]">{new Date(a.created_at).toLocaleString('es')}</span>
           </div>
         ))}
       </Card>
+
+      <Sheet
+        open={Boolean(confirmRedactReq)}
+        onClose={() => setConfirmRedactReq(null)}
+        title="Confirmar anonimización en cascada"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-[var(--text-muted)]">
+            Esta acción es irreversible. Se anonimizarán los datos personales del contacto{' '}
+            <strong>{confirmRedactReq?.contact_name || confirmRedactReq?.contact_id}</strong> en conversaciones, leads y registros asociados.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setConfirmRedactReq(null)}>
+              Cancelar
+            </Button>
+            <Button variant="danger" onClick={() => executeRedact(confirmRedactReq)}>
+              Confirmar anonimización
+            </Button>
+          </div>
+        </div>
+      </Sheet>
     </div>
   );
 }

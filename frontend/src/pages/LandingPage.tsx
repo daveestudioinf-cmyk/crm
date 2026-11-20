@@ -20,10 +20,10 @@ export function LandingPage() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 md:px-8 py-14 md:py-20">
+      <main className="max-w-6xl mx-auto px-4 md:px-8 py-12 md:py-20">
         <div className="max-w-3xl space-y-5">
           <span className="inline-flex items-center gap-1.5 rounded-full bg-teal-50 border border-teal-200 px-3 py-1 text-xs font-semibold text-teal-800">
-            <Cpu className="w-3.5 h-3.5" /> Go Desacoplado + PostgreSQL/pgvector + MCP Nativo
+            <Cpu className="w-3.5 h-3.5 shrink-0" /> Go Desacoplado + PostgreSQL/pgvector + MCP Nativo
           </span>
           <h1 className="text-3xl md:text-5xl font-bold tracking-tight leading-tight">
             El CRM de Ventas por WhatsApp con IA diseñado para velocidad y equipos móviles.
@@ -61,6 +61,23 @@ export function LandingPage() {
           })}
         </div>
       </main>
+
+      <footer className="border-t border-[var(--border)] bg-[var(--surface)] px-4 md:px-8 py-6 text-xs text-[var(--text-muted)]">
+        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3">
+          <span>© {new Date().getFullYear()} KoraCRM — CRM de Ventas por WhatsApp</span>
+          <div className="flex flex-wrap items-center gap-4">
+            <Link to="/get-started" className="hover:text-[var(--text)] underline-offset-2 hover:underline">
+              Comenzar
+            </Link>
+            <Link to="/legal/privacy" className="hover:text-[var(--text)] underline-offset-2 hover:underline">
+              Política de Privacidad
+            </Link>
+            <Link to="/legal/terms" className="hover:text-[var(--text)] underline-offset-2 hover:underline">
+              Términos de Servicio
+            </Link>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }

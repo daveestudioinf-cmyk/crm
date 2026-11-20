@@ -37,6 +37,7 @@ type Claims struct {
 	Role            string `json:"role"`
 	IsPlatformAdmin bool   `json:"pa"`
 	MfaPending      bool   `json:"mfa_pending,omitempty"`
+	Purpose         string `json:"purpose,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -102,10 +103,76 @@ func ParseToken(secret, tokenStr string) (*Claims, error) {
 		return nil, err
 	}
 	claims, ok := tok.Claims.(*Claims)
-	if !ok {
+	if !ok || claims.Purpose != "" {
 		return nil, jwt.ErrTokenInvalidClaims
 	}
 	return claims, nil
+}
+
+type PasswordResetClaims struct {
+	UserID       string `json:"uid"`
+	PWHashPrefix string `json:"pwh"`
+	Purpose      string `json:"purpose"`
+	jwt.RegisteredClaims
+}
+
+func passwordHashPrefix(pwHash string) string {
+	if len(pwHash) > 16 {
+		return pwHash[:16]
+	}
+	return pwHash
+}
+
+func IssuePasswordResetToken(secret, userID, pwHash string, ttl time.Duration) (string, error) {
+	claims := PasswordResetClaims{
+		UserID:       userID,
+		PWHashPrefix: passwordHashPrefix(pwHash),
+		Purpose:      "password_reset",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return tok.SignedString([]byte(secret))
+}
+
+func ParsePasswordResetToken(secret, tokenStr string) (*PasswordResetClaims, error) {
+	tok, err := jwt.ParseWithClaims(tokenStr, &PasswordResetClaims{}, func(t *jwt.Token) (any, error) {
+		return []byte(secret), nil
+	})
+	if err != nil || !tok.Valid {
+		return nil, err
+	}
+	claims, ok := tok.Claims.(*PasswordResetClaims)
+	if !ok || claims.Purpose != "password_reset" || claims.UserID == "" {
+		return nil, jwt.ErrTokenInvalidClaims
+	}
+	return claims, nil
+}
+
+func GenerateRecoveryCodes(count int) ([]string, error) {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	codes := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		b := make([]byte, 8)
+		if _, err := rand.Read(b); err != nil {
+			return nil, err
+		}
+		var sb strings.Builder
+		for j := 0; j < 8; j++ {
+			if j == 4 {
+				sb.WriteByte('-')
+			}
+			sb.WriteByte(alphabet[int(b[j])%len(alphabet)])
+		}
+		codes = append(codes, sb.String())
+	}
+	return codes, nil
+}
+
+func NormalizeRecoveryCode(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
 }
 
 func extractRemoteIP(r *http.Request) string {

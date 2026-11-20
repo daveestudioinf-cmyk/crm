@@ -18,6 +18,9 @@ type Config struct {
 	AIEncryptionKey string
 	MinioEndpoint   string
 	MinioBucket     string
+	MinioAccessKey  string
+	MinioSecretKey  string
+	UploadDir       string
 	SecureCookies   bool
 }
 
@@ -37,6 +40,9 @@ func Load() Config {
 		AIEncryptionKey: getEnv("AI_ENCRYPTION_KEY", jwtSecret),
 		MinioEndpoint:   getEnv("MINIO_ENDPOINT", ""),
 		MinioBucket:     getEnv("MINIO_BUCKET", "crm-media"),
+		MinioAccessKey:  getEnv("MINIO_ACCESS_KEY", ""),
+		MinioSecretKey:  getEnv("MINIO_SECRET_KEY", ""),
+		UploadDir:       getEnv("UPLOAD_DIR", "./uploads"),
 		SecureCookies:   getEnv("SECURE_COOKIES", "false") == "true",
 	}
 }

@@ -181,6 +181,17 @@ func (h *Handler) CreateLGPDRequest(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "contact_id and request_type required")
 		return
 	}
+	if req.RequestType != "export" && req.RequestType != "redact" {
+		httpx.Error(w, http.StatusBadRequest, "invalid request_type")
+		return
+	}
+	var contactExists bool
+	if err := h.Pool.QueryRow(r.Context(), `
+		SELECT EXISTS(SELECT 1 FROM contacts WHERE id=$1 AND organization_id=$2)
+	`, req.ContactID, id.OrganizationID).Scan(&contactExists); err != nil || !contactExists {
+		httpx.Error(w, http.StatusNotFound, "contact not found")
+		return
+	}
 	var lid string
 	err := h.Pool.QueryRow(r.Context(), `
 		INSERT INTO lgpd_requests (organization_id, contact_id, request_type, requested_by)
@@ -196,29 +207,138 @@ func (h *Handler) CreateLGPDRequest(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ExecuteLGPDRequest(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	lid := chi.URLParam(r, "id")
-	var contactID, rtype string
-	err := h.Pool.QueryRow(r.Context(), `SELECT contact_id, request_type FROM lgpd_requests WHERE id=$1 AND organization_id=$2`, lid, id.OrganizationID).Scan(&contactID, &rtype)
+	var contactID, rtype, status string
+	err := h.Pool.QueryRow(r.Context(), `
+		SELECT contact_id, request_type, status
+		FROM lgpd_requests
+		WHERE id=$1 AND organization_id=$2
+	`, lid, id.OrganizationID).Scan(&contactID, &rtype, &status)
 	if err != nil {
 		httpx.Error(w, http.StatusNotFound, "request not found")
 		return
 	}
+	if status != "pending" {
+		httpx.Error(w, http.StatusConflict, "request already processed")
+		return
+	}
+
+	var contactExists bool
+	_ = h.Pool.QueryRow(r.Context(), `
+		SELECT EXISTS(SELECT 1 FROM contacts WHERE id=$1 AND organization_id=$2)
+	`, contactID, id.OrganizationID).Scan(&contactExists)
+	if !contactExists {
+		httpx.Error(w, http.StatusNotFound, "contact not found")
+		return
+	}
+
 	if rtype == "redact" {
-		_, _ = h.Pool.Exec(r.Context(), `
-			UPDATE contacts SET name='Anonymized Contact', phone_number=NULL, email=NULL, cpf=NULL, is_anonymized=true, updated_at=now()
+		tx, err := h.Pool.Begin(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		defer tx.Rollback(r.Context())
+
+		if _, err := tx.Exec(r.Context(), `
+			UPDATE contacts
+			SET name='Anonymized Contact', display_name=NULL, phone_number=NULL, email=NULL, cpf=NULL,
+			    tags='{}', custom_fields='{}', is_anonymized=true, updated_at=now()
 			WHERE id=$1 AND organization_id=$2
-		`, contactID, id.OrganizationID)
-		_, _ = h.Pool.Exec(r.Context(), `UPDATE lgpd_requests SET status='completed', completed_at=now() WHERE id=$1`, lid)
-		auth.WriteAudit(r.Context(), h.Pool, id, "lgpd.redact", "contact", contactID, map[string]any{})
+		`, contactID, id.OrganizationID); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "failed to redact contact")
+			return
+		}
+		if _, err := tx.Exec(r.Context(), `
+			DELETE FROM contact_phones WHERE contact_id=$1 AND organization_id=$2
+		`, contactID, id.OrganizationID); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "failed to redact contact phones")
+			return
+		}
+		if _, err := tx.Exec(r.Context(), `
+			UPDATE lgpd_requests SET status='completed', completed_at=now() WHERE id=$1 AND organization_id=$2
+		`, lid, id.OrganizationID); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "failed to update request")
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "commit failed")
+			return
+		}
+
+		_ = auth.WriteAudit(r.Context(), h.Pool, id, "lgpd.redact", "contact", contactID, map[string]any{"request_id": lid})
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "redacted"})
 		return
 	}
 
-	var name, email, phone string
-	_ = h.Pool.QueryRow(r.Context(), `SELECT name, COALESCE(email,''), COALESCE(phone_number,'') FROM contacts WHERE id=$1`, contactID).Scan(&name, &email, &phone)
-	exp, _ := json.Marshal(map[string]any{"contact_id": contactID, "name": name, "email": email, "phone_number": phone})
-	_, _ = h.Pool.Exec(r.Context(), `UPDATE lgpd_requests SET status='completed', export_payload=$1, completed_at=now() WHERE id=$2`, string(exp), lid)
-	auth.WriteAudit(r.Context(), h.Pool, id, "lgpd.export", "contact", contactID, map[string]any{})
+	var name, email, phone, cpf string
+	var tags []string
+	var customFields, consent json.RawMessage
+	err = h.Pool.QueryRow(r.Context(), `
+		SELECT name, COALESCE(email,''), COALESCE(phone_number,''), COALESCE(cpf,''), tags, custom_fields, consent
+		FROM contacts
+		WHERE id=$1 AND organization_id=$2
+	`, contactID, id.OrganizationID).Scan(&name, &email, &phone, &cpf, &tags, &customFields, &consent)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "contact not found")
+		return
+	}
+
+	phones := []map[string]any{}
+	rows, err := h.Pool.Query(r.Context(), `
+		SELECT phone_e164, label, is_primary FROM contact_phones WHERE contact_id=$1 AND organization_id=$2
+	`, contactID, id.OrganizationID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var pe164, lbl string
+			var isPrim bool
+			if rows.Scan(&pe164, &lbl, &isPrim) == nil {
+				phones = append(phones, map[string]any{"phone_e164": pe164, "label": lbl, "is_primary": isPrim})
+			}
+		}
+	}
+
+	exp, _ := json.Marshal(map[string]any{
+		"contact_id":    contactID,
+		"name":          name,
+		"email":         email,
+		"phone_number":  phone,
+		"cpf":           cpf,
+		"tags":          tags,
+		"custom_fields": json.RawMessage(customFields),
+		"consent":       json.RawMessage(consent),
+		"phones":        phones,
+	})
+	_, _ = h.Pool.Exec(r.Context(), `
+		UPDATE lgpd_requests SET status='completed', export_payload=$1, completed_at=now() WHERE id=$2 AND organization_id=$3
+	`, string(exp), lid, id.OrganizationID)
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "lgpd.export", "contact", contactID, map[string]any{"request_id": lid})
 	httpx.JSON(w, http.StatusOK, map[string]any{"status": "exported", "data": json.RawMessage(exp)})
+}
+
+func (h *Handler) RejectLGPDRequest(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	lid := chi.URLParam(r, "id")
+	var status string
+	err := h.Pool.QueryRow(r.Context(), `
+		SELECT status FROM lgpd_requests WHERE id=$1 AND organization_id=$2
+	`, lid, id.OrganizationID).Scan(&status)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "request not found")
+		return
+	}
+	if status != "pending" {
+		httpx.Error(w, http.StatusConflict, "request already processed")
+		return
+	}
+	if _, err := h.Pool.Exec(r.Context(), `
+		UPDATE lgpd_requests SET status='rejected', completed_at=now() WHERE id=$1 AND organization_id=$2
+	`, lid, id.OrganizationID); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "lgpd.reject", "lgpd_request", lid, map[string]any{})
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }
 
 func (h *Handler) ListTeam(w http.ResponseWriter, r *http.Request) {
