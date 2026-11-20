@@ -27,7 +27,13 @@ export function ChannelsPage() {
         load();
       }
     });
-    return unsub;
+    const timer = window.setInterval(() => {
+      load();
+    }, 2000);
+    return () => {
+      unsub();
+      window.clearInterval(timer);
+    };
   }, []);
 
   async function openQR(chId: string, sname: string) {
@@ -95,6 +101,7 @@ export function ChannelsPage() {
           onChange={(e) => setSessionName(e.target.value)}
         />
         <select
+          aria-label="Proveedor de WhatsApp"
           value={provider}
           onChange={(e) => setProvider(e.target.value)}
           className="h-10 rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-3 text-sm"
@@ -321,6 +328,7 @@ export function LGPDPage() {
         <form onSubmit={createRequest} className="flex flex-wrap gap-2">
           <select
             required
+            aria-label="Seleccionar contacto"
             value={contactId}
             onChange={(e) => setContactId(e.target.value)}
             className="h-10 flex-1 min-w-[180px] rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-3 text-sm"
@@ -333,6 +341,7 @@ export function LGPDPage() {
             ))}
           </select>
           <select
+            aria-label="Tipo de solicitud LGPD"
             value={requestType}
             onChange={(e) => setRequestType(e.target.value as 'export' | 'redact')}
             className="h-10 rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-3 text-sm"

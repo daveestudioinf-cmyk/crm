@@ -457,7 +457,7 @@ export function TasksPage() {
       <section className="space-y-3 pt-2">
         <div className="flex items-center justify-between gap-2">
           <div>
-            <h2 className="text-sm font-semibold text-[var(--text)]">Planes de Tareas Reutilizables</h2>
+            <h2 className="text-sm font-semibold text-[var(--text)]">Planes Reutilizables</h2>
             <p className="text-xs text-[var(--text-muted)]">
               Secuencias predefinidas que generan tareas con fechas relativas al instante
             </p>

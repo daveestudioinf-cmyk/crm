@@ -1110,7 +1110,7 @@ test.describe('Feature #16: Media persistence via MinIO/S3 + signed/proxied URLs
 
       await loginViaUI(page, tenant.email, tenant.password);
       await openInboxConversation(page, contactName);
-      await expect(page.getByText('Ver archivo adjunto')).toBeVisible();
+      await expect(page.getByText('Ver archivo adjunto').first()).toBeVisible();
       await assertZeroOverflow(page);
     });
   });
@@ -1353,7 +1353,7 @@ test.describe('Feature #18: Unified Go SSE Realtime Hub + reconnect banner', () 
         data: payload,
       });
 
-      await expect(page.getByText('SSE Cliente')).toBeVisible({ timeout: 10000 });
+      await expect(page.getByText('SSE Cliente').first()).toBeVisible({ timeout: 10000 });
     });
 
     test('T1.18.3 Conversation claim publishes conversation.updated event', async ({ page, request }) => {
@@ -1361,7 +1361,7 @@ test.describe('Feature #18: Unified Go SSE Realtime Hub + reconnect banner', () 
       const { contactName, conversationId } = await createContactAndConvViaAPI(request, tenant.accessToken);
       await loginViaUI(page, tenant.email, tenant.password);
       await page.goto('/app/inbox');
-      await expect(page.getByText(contactName)).toBeVisible();
+      await expect(page.getByText(contactName).first()).toBeVisible();
 
       await apiRequest(request, 'POST', `/api/v1/conversations/${conversationId}/claim`, tenant.accessToken);
       await expect(page.getByText('claimed').first()).toBeVisible({ timeout: 10000 });
@@ -1851,7 +1851,7 @@ test.describe('Feature #21: Quick replies, internal notes, 24h window & block-un
 
       await loginViaUI(page, tenant.email, tenant.password);
       await openInboxConversation(page, contactName);
-      await expect(page.getByText(/24\s*h|ventana de 24|plantilla/i)).toBeVisible();
+      await expect(page.getByText(/Ventana de 24\s*h/i).first()).toBeVisible();
     });
 
     test('T1.21.5 Block-until-claimed prevents free-form reply until operator clicks Reclamar', async ({ page, request }) => {

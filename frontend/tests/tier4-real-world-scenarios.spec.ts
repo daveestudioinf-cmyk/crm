@@ -157,7 +157,7 @@ test.describe('Tier 4 — Real-World End-to-End CRM Scenarios (F01–F08)', () =
     await page.getByRole('button', { name: /Nuevo / }).first().click();
     await page.getByPlaceholder('Plan Empresarial').fill('Implementación Anual Elena');
     await page.getByRole('combobox').first().selectOption({ index: 1 });
-    await page.getByRole('button', { name: 'Crear', exact: true }).click();
+    await page.getByRole('button', { name: /^Crear/ }).click();
     await expect(page.getByText('Implementación Anual Elena').first()).toBeVisible();
     await assertZeroOverflow(page);
 

@@ -47,7 +47,8 @@ func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT conv.id, conv.contact_id, c.name, COALESCE(c.phone_number,''), conv.status,
 		       conv.assigned_to, conv.service_revision, COALESCE(conv.last_message_preview,''),
-		       conv.last_message_at, conv.last_inbound_at, conv.unread_count, c.is_blocked, c.force_human
+		       conv.last_message_at, conv.last_inbound_at, conv.unread_count, c.is_blocked, c.force_human,
+		       COALESCE(conv.channel_session_id::text, '')
 		FROM conversations conv
 		JOIN contacts c ON c.id = conv.contact_id
 		WHERE conv.organization_id = $1 AND ($2 = '' OR conv.status = $2)
@@ -60,17 +61,18 @@ func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var cid, contactID, cname, cphone, st, preview string
+		var cid, contactID, cname, cphone, st, preview, chSessID string
 		var assignedTo *string
 		var rev, unread int
 		var lastMsg, lastIn any
 		var blocked, forceHuman bool
-		_ = rows.Scan(&cid, &contactID, &cname, &cphone, &st, &assignedTo, &rev, &preview, &lastMsg, &lastIn, &unread, &blocked, &forceHuman)
+		_ = rows.Scan(&cid, &contactID, &cname, &cphone, &st, &assignedTo, &rev, &preview, &lastMsg, &lastIn, &unread, &blocked, &forceHuman, &chSessID)
 		out = append(out, map[string]any{
 			"id": cid, "contact_id": contactID, "contact_name": cname, "contact_phone": cphone,
 			"status": st, "assigned_to": assignedTo, "service_revision": rev,
 			"last_message_preview": preview, "last_message_at": lastMsg, "last_inbound_at": lastIn,
 			"unread_count": unread, "is_blocked": blocked, "force_human": forceHuman,
+			"channel_session_id": chSessID,
 		})
 	}
 	httpx.JSON(w, http.StatusOK, out)
@@ -108,10 +110,14 @@ func (h *Handler) ClaimConversation(w http.ResponseWriter, r *http.Request) {
 	cid := chi.URLParam(r, "id")
 	var req struct {
 		ExpectedRevision *int `json:"expected_revision"`
+		ServiceRevision  *int `json:"service_revision"`
 	}
 	if err := httpx.Decode(r, &req); err != nil && !errors.Is(err, io.EOF) {
 		httpx.Error(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+	if req.ExpectedRevision == nil {
+		req.ExpectedRevision = req.ServiceRevision
 	}
 
 	var newRev int
@@ -163,17 +169,25 @@ func (h *Handler) TransferConversation(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TargetUserID     string `json:"target_user_id"`
 		AgentID          string `json:"agent_id"`
+		AssigneeID       string `json:"assignee_id"`
 		AutoRoute        bool   `json:"auto_route"`
 		ExpectedRevision *int   `json:"expected_revision"`
+		ServiceRevision  *int   `json:"service_revision"`
 	}
 	if err := httpx.Decode(r, &req); err != nil && !errors.Is(err, io.EOF) {
 		httpx.Error(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if req.ExpectedRevision == nil {
+		req.ExpectedRevision = req.ServiceRevision
+	}
 
 	targetID := strings.TrimSpace(req.TargetUserID)
 	if targetID == "" {
 		targetID = strings.TrimSpace(req.AgentID)
+	}
+	if targetID == "" {
+		targetID = strings.TrimSpace(req.AssigneeID)
 	}
 
 	// Verify conversation exists and check revision upfront before selecting target
@@ -267,27 +281,70 @@ func (h *Handler) ResolveConversation(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	cid := chi.URLParam(r, "id")
 	var req struct {
-		Status string `json:"status"` // "resolved" or "ai_handling"
+		Status           string `json:"status"` // "resolved" or "ai_handling"
+		ExpectedRevision *int   `json:"expected_revision"`
+		ServiceRevision  *int   `json:"service_revision"`
 	}
-	_ = httpx.Decode(r, &req)
+	if err := httpx.Decode(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.ExpectedRevision == nil {
+		req.ExpectedRevision = req.ServiceRevision
+	}
 	if req.Status == "" {
 		req.Status = "resolved"
 	}
-	tag, err := h.Pool.Exec(r.Context(), `
-		UPDATE conversations SET status = $3, service_revision = service_revision + 1, updated_at = now()
-		WHERE id = $1 AND organization_id = $2
-	`, cid, id.OrganizationID, req.Status)
-	if err != nil || tag.RowsAffected() == 0 {
-		httpx.Error(w, http.StatusNotFound, "conversation not found")
+	switch req.Status {
+	case "open", "claimed", "resolved", "ai_handling":
+	default:
+		httpx.Error(w, http.StatusBadRequest, "invalid status")
 		return
 	}
-	h.publish(id.OrganizationID, "conversation.updated", map[string]any{"id": cid, "status": req.Status})
-	httpx.JSON(w, http.StatusOK, map[string]any{"status": req.Status})
+
+	var newRev int
+	var err error
+	if req.ExpectedRevision != nil {
+		err = h.Pool.QueryRow(r.Context(), `
+			UPDATE conversations SET status = $3, service_revision = service_revision + 1, updated_at = now()
+			WHERE id = $1 AND organization_id = $2 AND service_revision = $4
+			RETURNING service_revision
+		`, cid, id.OrganizationID, req.Status, *req.ExpectedRevision).Scan(&newRev)
+		if err != nil {
+			var curRev int
+			if chkErr := h.Pool.QueryRow(r.Context(), `SELECT service_revision FROM conversations WHERE id = $1 AND organization_id = $2`, cid, id.OrganizationID).Scan(&curRev); chkErr == nil {
+				httpx.JSON(w, http.StatusConflict, map[string]any{
+					"error":            "conversation_revision_conflict",
+					"current_revision": curRev,
+				})
+				return
+			}
+			httpx.Error(w, http.StatusNotFound, "conversation not found")
+			return
+		}
+	} else {
+		err = h.Pool.QueryRow(r.Context(), `
+			UPDATE conversations SET status = $3, service_revision = service_revision + 1, updated_at = now()
+			WHERE id = $1 AND organization_id = $2
+			RETURNING service_revision
+		`, cid, id.OrganizationID, req.Status).Scan(&newRev)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, "conversation not found")
+			return
+		}
+	}
+	h.publish(id.OrganizationID, "conversation.updated", map[string]any{"id": cid, "status": req.Status, "service_revision": newRev})
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": req.Status, "service_revision": newRev})
 }
 
 func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	cid := chi.URLParam(r, "id")
+	var convExists string
+	if err := h.Pool.QueryRow(r.Context(), `SELECT id FROM conversations WHERE id=$1 AND organization_id=$2`, cid, id.OrganizationID).Scan(&convExists); err != nil {
+		httpx.Error(w, http.StatusNotFound, "conversation not found")
+		return
+	}
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT id, direction, sender_type, content_type, body, COALESCE(media_url,''), status, sentiment_score, metadata, sent_at
 		FROM messages WHERE organization_id=$1 AND conversation_id=$2 ORDER BY sent_at ASC LIMIT 200
@@ -317,11 +374,13 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	cid := chi.URLParam(r, "id")
 	var req struct {
-		Body        string `json:"body"`
-		ContentType string `json:"content_type"` // text | image | audio | document | location | note
-		MediaURL    string `json:"media_url"`
+		Body           string   `json:"body"`
+		ContentType    string   `json:"content_type"` // text | image | audio | document | location | note | template
+		MediaURL       string   `json:"media_url"`
+		TemplateName   string   `json:"template_name"`
+		TemplateParams []string `json:"template_params"`
 	}
-	if err := httpx.Decode(r, &req); err != nil || (strings.TrimSpace(req.Body) == "" && strings.TrimSpace(req.MediaURL) == "") {
+	if err := httpx.Decode(r, &req); err != nil || (strings.TrimSpace(req.Body) == "" && strings.TrimSpace(req.MediaURL) == "" && strings.TrimSpace(req.TemplateName) == "") {
 		httpx.Error(w, http.StatusBadRequest, "body or media_url required")
 		return
 	}
@@ -329,9 +388,13 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		req.ContentType = "text"
 	}
 	switch req.ContentType {
-	case "text", "image", "audio", "document", "location", "note":
+	case "text", "image", "audio", "document", "location", "note", "template":
 	default:
 		httpx.Error(w, http.StatusBadRequest, "invalid content_type")
+		return
+	}
+	if req.ContentType == "template" && strings.TrimSpace(req.TemplateName) == "" {
+		httpx.Error(w, http.StatusBadRequest, "template_name required")
 		return
 	}
 
@@ -356,13 +419,17 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isNote := req.ContentType == "note"
+	isTemplate := req.ContentType == "template"
+	if isTemplate && strings.TrimSpace(req.Body) == "" {
+		req.Body = req.TemplateName
+	}
 	if !isNote {
 		if isBlocked {
 			httpx.Error(w, http.StatusUnprocessableEntity, "contact opted out (STOP)")
 			return
 		}
 		if channelSessionID != "" {
-			if lastInboundAt == nil || time.Since(*lastInboundAt) > 24*time.Hour {
+			if !isTemplate && (lastInboundAt == nil || time.Since(*lastInboundAt) > 24*time.Hour) {
 				httpx.JSON(w, http.StatusUnprocessableEntity, map[string]any{
 					"error": "whatsapp_24h_window_expired",
 					"code":  "WINDOW_24H_EXPIRED",
@@ -380,6 +447,11 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	dbContentType := req.ContentType
+	if isTemplate {
+		dbContentType = "text"
+	}
+
 	// Chunk messages > 4096 chars per WhatsApp limits
 	chunks := chunkText(req.Body, 4096)
 	var lastID string
@@ -391,7 +463,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		err := h.Pool.QueryRow(r.Context(), `
 			INSERT INTO messages (organization_id, conversation_id, direction, sender_type, sender_user_id, content_type, body, media_url, status)
 			VALUES ($1, $2, 'outbound', 'human', $3, $4, $5, NULLIF($6, ''), 'sent') RETURNING id
-		`, id.OrganizationID, cid, id.UserID, req.ContentType, chunk, mediaArg).Scan(&lastID)
+		`, id.OrganizationID, cid, id.UserID, dbContentType, chunk, mediaArg).Scan(&lastID)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, "failed to save message")
 			return

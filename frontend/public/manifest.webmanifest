@@ -1,7 +1,8 @@
 {
-  "name": "KoraCRM — AI WhatsApp Sales OS",
+  "name": "KoraCRM — CRM de Ventas por WhatsApp con IA",
   "short_name": "KoraCRM",
-  "description": "Decoupled AI-first WhatsApp CRM & Sales OS",
+  "description": "CRM de ventas por WhatsApp con IA desacoplado",
+  "lang": "es",
   "start_url": "/app/inbox",
   "display": "standalone",
   "background_color": "#ffffff",

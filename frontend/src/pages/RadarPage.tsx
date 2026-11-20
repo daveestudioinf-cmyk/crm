@@ -30,10 +30,10 @@ function formatWaitTime(waitMins: number): string {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  open: 'Abierta',
-  pending: 'En cola',
-  claimed: 'Reclamada',
-  ai_handling: 'IA',
+  open: 'Abierta (open)',
+  pending: 'En cola (pending)',
+  claimed: 'Reclamada (claimed)',
+  ai_handling: 'IA (ai_handling)',
 };
 
 export function RadarPage() {

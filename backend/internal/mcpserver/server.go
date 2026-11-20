@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/ai"
@@ -134,9 +135,9 @@ func (s *Server) callTool(ctx context.Context, orgID, name string, args map[stri
 	case "create_task":
 		var tid string
 		err := s.Pool.QueryRow(ctx, `INSERT INTO crm_tasks (organization_id, title) VALUES ($1,$2) RETURNING id`, orgID, str("title")).Scan(&tid)
-		return map[string]any{"task_id": tid}, err
+		return map[string]any{"task_id": tid, "title": str("title")}, err
 	default:
-		return map[string]any{"error": "unknown tool"}, nil
+		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
 }
 

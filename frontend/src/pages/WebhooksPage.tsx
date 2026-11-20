@@ -277,6 +277,7 @@ export function RuleBuilder({
           <div>
             <label className="text-xs font-medium block mb-1">CUÁNDO (WHEN) — Evento disparador</label>
             <select
+              aria-label="Evento disparador"
               value={triggerEvent}
               onChange={(e) => setTriggerEvent(e.target.value)}
               className="w-full h-10 rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-3 text-sm"
@@ -312,6 +313,7 @@ export function RuleBuilder({
                     onChange={(e) => updateCondition(idx, { field: e.target.value })}
                   />
                   <select
+                    aria-label="Operador de condición"
                     value={c.op}
                     onChange={(e) =>
                       updateCondition(idx, { op: e.target.value as AutomationCondition['op'] })
@@ -360,6 +362,7 @@ export function RuleBuilder({
               return (
                 <div key={idx} className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center">
                   <select
+                    aria-label="Tipo de acción"
                     value={a.type}
                     onChange={(e) =>
                       updateAction(

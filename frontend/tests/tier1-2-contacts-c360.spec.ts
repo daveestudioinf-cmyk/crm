@@ -10,7 +10,7 @@ import { signupViaAPI, apiRequest, uniqueId } from './helpers/api';
 async function seedAuthenticatedSession(page: Page, accessToken: string): Promise<void> {
   await page.goto('/login');
   await page.evaluate((token) => {
-    localStorage.setItem('koracrm_token', token);
+    localStorage.setItem('koracrm_access_token', token);
   }, accessToken);
 }
 
@@ -853,11 +853,20 @@ test.describe('Feature #11: Pipeline Vocabulary & Custom Fields (Tier 1)', () =>
       user.accessToken
     );
 
+    const c = await apiRequest<{ id: string }>(
+      request,
+      'POST',
+      '/api/v1/contacts',
+      user.accessToken,
+      { name: 'Contacto Custom Fields', phone_number: '+5215511122233' }
+    );
+
     const created = await apiRequest<{
       id: string;
       custom_fields?: Record<string, unknown>;
     }>(request, 'POST', '/api/v1/leads', user.accessToken, {
       title: 'Lead Campos Personalizados',
+      contact_id: c.data.id,
       pipeline_id: pipelines.data[0].id,
       stage_id: pipelines.data[0].stages[0].id,
       custom_fields: { origen: 'Instagram Ads', presupuesto_mxn: 45000 },
@@ -877,6 +886,14 @@ test.describe('Feature #11: Pipeline Vocabulary & Custom Fields (Tier 1)', () =>
       user.accessToken
     );
 
+    const c = await apiRequest<{ id: string }>(
+      request,
+      'POST',
+      '/api/v1/contacts',
+      user.accessToken,
+      { name: 'Contacto Custom Update', phone_number: '+5215511122244' }
+    );
+
     const created = await apiRequest<{ id: string }>(
       request,
       'POST',
@@ -884,6 +901,7 @@ test.describe('Feature #11: Pipeline Vocabulary & Custom Fields (Tier 1)', () =>
       user.accessToken,
       {
         title: 'Lead Patch Custom',
+        contact_id: c.data.id,
         pipeline_id: pipelines.data[0].id,
         stage_id: pipelines.data[0].stages[0].id,
         custom_fields: { prioridad: 'alta' },
@@ -943,6 +961,14 @@ test.describe('Feature #11: Pipeline Vocabulary & Custom Fields (Tier 2 - Bounda
       user.accessToken
     );
 
+    const c = await apiRequest<{ id: string }>(
+      request,
+      'POST',
+      '/api/v1/contacts',
+      user.accessToken,
+      { name: 'Contacto Unicode', phone_number: '+5215511122255' }
+    );
+
     const res = await apiRequest<{ custom_fields?: Record<string, unknown> }>(
       request,
       'POST',
@@ -950,6 +976,7 @@ test.describe('Feature #11: Pipeline Vocabulary & Custom Fields (Tier 2 - Bounda
       user.accessToken,
       {
         title: 'Lead Unicode Custom',
+        contact_id: c.data.id,
         pipeline_id: pipelines.data[0].id,
         stage_id: pipelines.data[0].stages[0].id,
         custom_fields: {

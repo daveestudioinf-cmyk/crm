@@ -87,6 +87,8 @@ func main() {
 		r.Post("/team/accept-invite", authH.AcceptInvite)
 		r.Post("/webhooks/waha/{session}", waH.WAHAWebhook)
 		r.Post("/webhooks/evolution/{session}", waH.EvolutionWebhook)
+		r.Get("/webhooks/meta/{session}", waH.MetaWebhookVerify)
+		r.Post("/webhooks/meta/{session}", waH.MetaWebhookReceive)
 		r.Post("/webhooks/in/{token}", autoH.InboundLeadCapture)
 
 		// Platform Admin Routes (isolated from RequireTenantAccess and X-Support-Session-ID)
@@ -212,6 +214,21 @@ func main() {
 				r.Delete("/products/{id}", crmH.DeleteProduct)
 			})
 
+			// Agenda & Waitlist
+			r.Get("/appointments", crmH.ListAppointments)
+			r.Get("/appointments/{id}", crmH.GetAppointment)
+			r.Get("/waitlist", crmH.ListWaitlist)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("agent"))
+				r.Post("/appointments", crmH.CreateAppointment)
+				r.Patch("/appointments/{id}", crmH.UpdateAppointment)
+				r.Delete("/appointments/{id}", crmH.DeleteAppointment)
+				r.Post("/waitlist", crmH.CreateWaitlistEntry)
+				r.Patch("/waitlist/{id}", crmH.UpdateWaitlistEntry)
+				r.Delete("/waitlist/{id}", crmH.DeleteWaitlistEntry)
+				r.Post("/waitlist/{id}/promote", crmH.PromoteWaitlistEntry)
+			})
+
 			// Inbox, Conversations, Messages, Media & Templates
 			r.Get("/conversations", inboxH.ListConversations)
 			r.Get("/conversations/{id}/messages", inboxH.ListMessages)
@@ -240,6 +257,7 @@ func main() {
 				r.Patch("/channels/{id}", waH.UpdateChannel)
 				r.Post("/channels/{id}/reconnect", waH.ReconnectChannel)
 				r.Post("/channels/{id}/disconnect", waH.DisconnectChannel)
+				r.Post("/channels/{id}/sync-templates", waH.SyncMetaTemplates)
 				r.Delete("/channels/{id}", waH.DeleteChannel)
 			})
 
@@ -256,6 +274,9 @@ func main() {
 			r.Get("/ai/routers", aiH.ListRouters)
 			r.Get("/ai/skills", aiH.ListSkills)
 			r.Get("/ai/cases", aiH.ListCases)
+			r.Get("/ai/cases/{id}", aiH.GetCase)
+			r.Post("/ai/cases", aiH.CreateCase)
+			r.Patch("/ai/cases/{id}", aiH.UpdateCase)
 			r.Get("/ai/inbox", aiH.ListInbox)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole("manager"))
@@ -311,6 +332,19 @@ func main() {
 				r.Post("/lgpd/requests/{id}/execute", autoH.ExecuteLGPDRequest)
 				r.Post("/lgpd/requests/{id}/reject", autoH.RejectLGPDRequest)
 			})
+			r.Get("/campaigns", autoH.ListCampaigns)
+			r.Get("/campaigns/{id}", autoH.GetCampaign)
+			r.Get("/campaigns/{id}/recipients", autoH.ListCampaignRecipients)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole("manager"))
+				r.Post("/campaigns", autoH.CreateCampaign)
+				r.Patch("/campaigns/{id}", autoH.UpdateCampaign)
+				r.Delete("/campaigns/{id}", autoH.DeleteCampaign)
+				r.Post("/campaigns/{id}/start", autoH.StartCampaign)
+				r.Post("/campaigns/{id}/pause", autoH.PauseCampaign)
+				r.Post("/campaigns/{id}/cancel", autoH.CancelCampaign)
+			})
+
 			r.Get("/team", autoH.ListTeam)
 			r.Get("/activities", autoH.ListActivities)
 			r.Get("/audit", autoH.ListAudit)

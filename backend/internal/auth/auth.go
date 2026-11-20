@@ -326,10 +326,12 @@ func (m *Middleware) RequireTenantAccess(next http.Handler) http.Handler {
 				err := m.Pool.QueryRow(r.Context(), `
 					SELECT role FROM user_organizations WHERE user_id = $1 AND organization_id = $2
 				`, id.UserID, hdrOrg).Scan(&role)
-				if err == nil {
-					id.OrganizationID = hdrOrg
-					id.Role = role
+				if err != nil {
+					httpx.Error(w, http.StatusForbidden, "organization_access_denied")
+					return
 				}
+				id.OrganizationID = hdrOrg
+				id.Role = role
 			}
 		}
 

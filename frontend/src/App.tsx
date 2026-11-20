@@ -42,6 +42,8 @@ import { CrmHubPage } from './pages/CrmHubPage';
 import { LeadDetailPage } from './pages/LeadDetailPage';
 import { ProductsPage } from './pages/ProductsPage';
 import { TasksPage } from './pages/TasksPage';
+import { CampaignsPage } from './pages/CampaignsPage';
+import { AgendaPage } from './pages/AgendaPage';
 import {
   ActivitiesPage,
   AuditPage,
@@ -237,6 +239,8 @@ const contactsRoute = createRoute({ getParentRoute: () => appRoute, path: '/cont
 const contactDetailRoute = createRoute({ getParentRoute: () => appRoute, path: '/contacts/$id', component: ContactDetailPage });
 const tasksRoute = createRoute({ getParentRoute: () => appRoute, path: '/tasks', component: TasksPage });
 const productsRoute = createRoute({ getParentRoute: () => appRoute, path: '/products', component: ProductsPage });
+const campaignsRoute = createRoute({ getParentRoute: () => appRoute, path: '/campaigns', component: CampaignsPage });
+const agendaRoute = createRoute({ getParentRoute: () => appRoute, path: '/agenda', component: AgendaPage });
 const aiRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai', component: AIPage });
 const aiAgentsRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/agents', component: AIPage });
 const aiFollowupsRoute = createRoute({ getParentRoute: () => appRoute, path: '/ai/followups', component: AIPage });
@@ -291,6 +295,8 @@ const routeTree = rootRoute.addChildren([
     contactDetailRoute,
     tasksRoute,
     productsRoute,
+    campaignsRoute,
+    agendaRoute,
     aiRoute,
     aiAgentsRoute,
     aiFollowupsRoute,

@@ -36,6 +36,7 @@ interface PendingAttachment {
 }
 
 function is24hWindowClosed(conv: any): boolean {
+  if (!conv?.channel_session_id) return false;
   if (!conv?.last_inbound_at) return true;
   const lastIn = new Date(conv.last_inbound_at).getTime();
   if (Number.isNaN(lastIn)) return true;
@@ -227,7 +228,13 @@ export function InboxPage() {
       },
       { onStatusChange: setSseStatus }
     );
-    return unsub;
+    const timer = window.setInterval(() => {
+      void loadConversations();
+    }, 2000);
+    return () => {
+      unsub();
+      window.clearInterval(timer);
+    };
   }, [selected?.id, loadConversations, sseKey]);
 
   const windowClosed = selected ? is24hWindowClosed(selected) : false;
@@ -555,7 +562,11 @@ export function InboxPage() {
                 <button
                   key={tab.k}
                   type="button"
-                  onClick={() => setFilter(tab.k)}
+                  onClick={() => {
+                    setFilter(tab.k);
+                    setSelected(null);
+                    setConversations([]);
+                  }}
                   className={`px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer shrink-0 ${
                     filter === tab.k
                       ? 'bg-[var(--accent)] text-[var(--on-accent)]'
@@ -748,14 +759,10 @@ export function InboxPage() {
                   <div className="flex items-center gap-2 min-w-0">
                     <Lock className="w-4 h-4 text-[var(--warning)] shrink-0" />
                     <span>
-                      Conversación sin reclamar. Reclámala para responder por WhatsApp o cambia a{' '}
+                      Conversación sin reclamar. Reclámala en la barra superior para responder por WhatsApp o cambia a{' '}
                       <strong>Nota interna</strong>.
                     </span>
                   </div>
-                  <Button size="sm" disabled={claiming} onClick={handleClaim}>
-                    <UserCheck className="w-3.5 h-3.5" />
-                    {claiming ? 'Reclamando...' : 'Reclamar'}
-                  </Button>
                 </div>
               )}
 
@@ -905,17 +912,16 @@ export function InboxPage() {
                         ? 'Escribe una nota interna para el equipo...'
                         : selected.is_blocked
                           ? 'Contacto dado de baja (STOP)'
-                          : isUnclaimed
-                            ? 'Reclama la conversación para responder por WhatsApp...'
-                            : windowClosed && !templateSelectedInClosedWindow
-                              ? 'Ventana de 24 h cerrada: escribe / para elegir una plantilla...'
-                              : 'Escribe un mensaje de WhatsApp o / para plantillas...'
+                          : windowClosed && !templateSelectedInClosedWindow
+                            ? 'Ventana de 24 h cerrada: escribe / para elegir una plantilla...'
+                            : 'Escribe un mensaje de WhatsApp...'
                     }
                     disabled={freeTextDisabled}
                     className={isNoteMode ? 'border-amber-400 bg-amber-50/40' : ''}
                   />
                   <Button
                     type="submit"
+                    aria-label="Enviar mensaje"
                     disabled={
                       sending ||
                       freeTextDisabled ||
@@ -1031,7 +1037,7 @@ function MediaPreview({
   const [blobType, setBlobType] = useState<string>('');
   const [failed, setFailed] = useState(false);
 
-  const needsAuthFetch = url.startsWith('/api/');
+  const needsAuthFetch = url.startsWith('/api/') && isImageMedia(url, contentType);
 
   useEffect(() => {
     if (!needsAuthFetch) {

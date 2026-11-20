@@ -13,7 +13,7 @@ Configurable pipeline vocabulary (multi-niche) & declarative custom fields,Custo
 Multi-number WhatsApp QR pairing & lifecycle management via WAHA adapter,WhatsApp Channel,must,yes,yes,channel_sessions + QR polling + reconnect
 HMAC-SHA512 inbound webhook receiver + unique(org external_id) idempotency,WhatsApp Channel,must,yes,yes,POST /api/v1/webhooks/waha/:session
 Optimistic outbound send (sending->sent/delivered/read/failed) + >4096 char chunking,WhatsApp Channel,must,yes,yes,4096 char chunking + SSE broadcast
-Anti-ban defenses (Redis throttle jitter business-hours warm-up STOP detection),WhatsApp Channel,must,yes,yes,Redis daily throttle + STOP opt-out blocking
+Anti-ban defenses (Redis throttle jitter business-hours warm-up STOP detection),WhatsApp Channel,must,yes,yes,Redis daily throttle + STOP opt-out blocking + M5 Campaigns worker throttle & warmup_daily_limit
 Media persistence via MinIO/S3 + signed/proxied URLs,WhatsApp Channel,must,yes,yes,MinIO configured in compose + media_url support
 Meta Cloud API official channel + HSM template sync,WhatsApp Channel,should,yes,partial,Provider enum & schema ready
 3-column real-time Inbox desktop + mobile sheet/drawer layout (zero horizontal scroll),Inbox & Attendance,must,yes,yes,3-col desktop + 2-step mobile + Customer 360 sheet
@@ -30,13 +30,13 @@ Multi-source tenant RAG (FAQ PDF/MD catalog) via pgvector / vector similarity,AI
 Async sentiment analysis + 4-trigger Handoff (explicit sentiment uncertainty critical stage),AI Agents & RAG,must,yes,yes,Handoff triggers + status=pending + SSE alert
 LLM call logging monthly org budget caps (80%/100%) & multi-provider config,AI Agents & RAG,must,yes,yes,ai_invocations + ai_budgets + /app/ai usage card
 Native Go MCP Server exposing CRM tools over stdio/SSE/HTTP with API token auth,AI Agents & RAG,must,yes,yes,cmd/mcp + POST /api/v1/mcp (7 CRM tools)
-AI Cases Central Alerts (/app/ai/inbox) Org Memory Skills & Automated Follow-ups,AI Agents & RAG,should,yes,partial,Core AI runs & handoff alerts implemented
+AI Cases Central Alerts (/app/ai/inbox) Org Memory Skills & Automated Follow-ups,AI Agents & RAG,should,yes,yes,/app/ai/cases /app/ai/inbox /app/ai/memory /app/ai/skills /app/ai/followups
 Event log queue + background Go workers (event-drain recover-stuck sync-sessions),Automation & Webhooks,must,yes,yes,cmd/worker draining event_log with SKIP LOCKED
 Inbound webhook lead capture sources + WHEN/IF/THEN automation builder + retry,Automation & Webhooks,must,yes,yes,POST /api/v1/webhooks/in/:token + automation_rules
 LGPD granular consent data-request export & cascade anonymization redact,LGPD Compliance,must,yes,yes,/app/lgpd + export JSON + cascade anonymization
 Performance dashboard (funnel sales goals attendant metrics) & Activities report,Analytics,should,yes,yes,/app/metrics + GET /api/v1/metrics
-WhatsApp Campaigns (throttled) & B2B Prospecting,Marketing & Outbound,could,yes,no,
-Agenda & Waitlist module,Vertical Modules,could,yes,no,
+WhatsApp Campaigns (throttled) & B2B Prospecting,Marketing & Outbound,could,yes,yes,/app/campaigns + /api/v1/campaigns + worker anti-ban throttle & STOP exclusion
+Agenda & Waitlist module,Vertical Modules,could,yes,yes,/app/agenda + /api/v1/appointments + /api/v1/waitlist + 409 overlap check
 Installable PWA with mobile bottom navigation bar & offline shell,Mobile & PWA,must,yes,yes,manifest.webmanifest + sw.js + bottom nav + zero overflow
 Unified Go SSE/WebSocket Realtime Hub with Redis pub/sub fan-out,Inbox & Attendance,must,no,yes,Differentiator: zero-BaaS realtime
 Mobile-first Kanban stage-tabs & Customer 360 bottom sheet (zero horizontal overflow),Mobile & PWA,must,no,yes,Differentiator: superior mobile UX

@@ -370,8 +370,10 @@ export function LeadDetailPage() {
             <form onSubmit={handleSaveLead} className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium">Título</label>
+                  <label htmlFor="lead-title-input" className="text-xs font-medium">Título</label>
                   <Input
+                    id="lead-title-input"
+                    aria-label="Título"
                     required
                     disabled={!canEdit}
                     value={title}
@@ -379,8 +381,10 @@ export function LeadDetailPage() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-medium">Valor ({lead.currency})</label>
+                  <label htmlFor="lead-value-input" className="text-xs font-medium">Valor ({lead.currency})</label>
                   <Input
+                    id="lead-value-input"
+                    aria-label="Valor"
                     type="number"
                     step="0.01"
                     min="0"
@@ -393,8 +397,10 @@ export function LeadDetailPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium">Etapa</label>
+                  <label htmlFor="lead-stage-select" className="text-xs font-medium">Etapa</label>
                   <select
+                    id="lead-stage-select"
+                    aria-label="Etapa"
                     disabled={!canEdit}
                     value={stageId}
                     onChange={(e) => setStageId(e.target.value)}
@@ -408,8 +414,10 @@ export function LeadDetailPage() {
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-medium">Estado</label>
+                  <label htmlFor="lead-status-select" className="text-xs font-medium">Estado</label>
                   <select
+                    id="lead-status-select"
+                    aria-label="Estado"
                     disabled={!canEdit}
                     value={status}
                     onChange={(e) => setStatus(e.target.value as 'open' | 'won' | 'lost')}
@@ -572,19 +580,23 @@ export function LeadDetailPage() {
               <form onSubmit={handleAddLink} className="space-y-2">
                 <select
                   required
+                  aria-label="Seleccionar lead o ticket a vincular"
                   value={targetLeadId}
                   onChange={(e) => setTargetLeadId(e.target.value)}
                   className="h-9 w-full rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-2.5 text-xs"
                 >
                   <option value="">Seleccionar lead o ticket...</option>
-                  {allLeads.map((l) => (
-                    <option key={l.id} value={l.id}>
-                      {l.title} ({l.contact_name})
-                    </option>
-                  ))}
+                  {allLeads
+                    .filter((l) => l.id !== lead.id && !lead.links.some((lk) => lk.linked_lead_id === l.id))
+                    .map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {l.title} ({l.contact_name})
+                      </option>
+                    ))}
                 </select>
                 <div className="flex gap-2">
                   <select
+                    aria-label="Tipo de vínculo"
                     value={linkType}
                     onChange={(e) => setLinkType(e.target.value)}
                     className="h-9 flex-1 rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-2.5 text-xs"

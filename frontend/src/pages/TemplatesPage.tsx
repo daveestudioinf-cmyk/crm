@@ -33,6 +33,8 @@ function CategoryFilter({
     <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filtrar por categoría">
       <button
         type="button"
+        role="tab"
+        aria-selected={selected === ''}
         onClick={() => onSelect('')}
         className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors cursor-pointer ${
           selected === ''
@@ -46,6 +48,8 @@ function CategoryFilter({
         <button
           key={cat}
           type="button"
+          role="tab"
+          aria-selected={selected === cat}
           onClick={() => onSelect(cat)}
           className={`px-3 py-1.5 rounded-full text-xs font-medium capitalize transition-colors cursor-pointer ${
             selected === cat

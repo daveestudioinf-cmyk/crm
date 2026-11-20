@@ -77,10 +77,18 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	temp := 0.3
 	if req.Temperature != nil {
-		temp = max(0, min(2.0, *req.Temperature))
+		if *req.Temperature < 0 || *req.Temperature > 2.0 {
+			httpx.Error(w, http.StatusBadRequest, "temperature must be between 0 and 2")
+			return
+		}
+		temp = *req.Temperature
 	}
 	maxTok := 500
-	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+	if req.MaxTokens != nil {
+		if *req.MaxTokens <= 0 {
+			httpx.Error(w, http.StatusBadRequest, "max_tokens must be positive")
+			return
+		}
 		maxTok = min(*req.MaxTokens, 8192)
 	}
 	handoff := true
@@ -491,7 +499,15 @@ func (h *Handler) CreateMemory(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteMemory(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	mid := chi.URLParam(r, "id")
-	_, _ = h.Pool.Exec(r.Context(), `DELETE FROM org_memory_entries WHERE id=$1 AND organization_id=$2`, mid, id.OrganizationID)
+	res, err := h.Pool.Exec(r.Context(), `DELETE FROM org_memory_entries WHERE id=$1 AND organization_id=$2`, mid, id.OrganizationID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if res.RowsAffected() == 0 {
+		httpx.Error(w, http.StatusNotFound, "memory entry not found")
+		return
+	}
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -1165,6 +1181,103 @@ func (h *Handler) ListCases(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	httpx.JSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) CreateCase(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	var req struct {
+		ConversationID string `json:"conversation_id"`
+		ContactID      string `json:"contact_id"`
+		AgentID        string `json:"agent_id"`
+		Title          string `json:"title"`
+		Summary        string `json:"summary"`
+		Trigger        string `json:"trigger"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	summary := strings.TrimSpace(req.Summary)
+	if title == "" {
+		if summary != "" {
+			title = summary
+		} else if strings.TrimSpace(req.Trigger) != "" {
+			title = "Escalamiento: " + strings.TrimSpace(req.Trigger)
+		} else {
+			httpx.Error(w, http.StatusBadRequest, "title or summary required")
+			return
+		}
+	}
+	var cid string
+	err := h.Pool.QueryRow(r.Context(), `
+		INSERT INTO agent_cases (organization_id, conversation_id, contact_id, agent_id, title, summary, status)
+		VALUES ($1, NULLIF($2,'')::uuid, NULLIF($3,'')::uuid, NULLIF($4,'')::uuid, $5, $6, 'awaiting_human')
+		RETURNING id
+	`, id.OrganizationID, req.ConversationID, req.ContactID, req.AgentID, title, summary).Scan(&cid)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "failed to create case")
+		return
+	}
+	_ = auth.WriteAudit(r.Context(), h.Pool, id, "ai_case.create", "agent_case", cid, map[string]any{"title": title, "trigger": req.Trigger})
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"id": cid, "title": title, "summary": summary, "status": "awaiting_human",
+	})
+}
+
+func (h *Handler) GetCase(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	cid := chi.URLParam(r, "id")
+	var outID, convID, contID, agID, title, summary, st, notes, decidedBy string
+	var decidedAt, createdAt, updatedAt any
+	err := h.Pool.QueryRow(r.Context(), `
+		SELECT id, COALESCE(conversation_id::text,''), COALESCE(contact_id::text,''), COALESCE(agent_id::text,''),
+		       title, summary, status, COALESCE(decision_notes,''), COALESCE(decided_by::text,''), decided_at, created_at, updated_at
+		FROM agent_cases
+		WHERE id = $1 AND organization_id = $2
+	`, cid, id.OrganizationID).Scan(&outID, &convID, &contID, &agID, &title, &summary, &st, &notes, &decidedBy, &decidedAt, &createdAt, &updatedAt)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "case not found")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id": outID, "conversation_id": convID, "contact_id": contID, "agent_id": agID,
+		"title": title, "summary": summary, "status": st, "decision_notes": notes,
+		"decided_by": decidedBy, "decided_at": decidedAt, "created_at": createdAt, "updated_at": updatedAt,
+	})
+}
+
+func (h *Handler) UpdateCase(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	cid := chi.URLParam(r, "id")
+	var req struct {
+		Status        string `json:"status"`
+		DecisionNotes string `json:"decision_notes"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	switch req.Status {
+	case "awaiting_human", "approved", "rejected", "resolved":
+	default:
+		httpx.Error(w, http.StatusBadRequest, "invalid status")
+		return
+	}
+	res, err := h.Pool.Exec(r.Context(), `
+		UPDATE agent_cases
+		SET status = $3, decision_notes = COALESCE(NULLIF($4,''), decision_notes), decided_by = $5, decided_at = now(), updated_at = now()
+		WHERE id = $1 AND organization_id = $2
+	`, cid, id.OrganizationID, req.Status, req.DecisionNotes, id.UserID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if res.RowsAffected() == 0 {
+		httpx.Error(w, http.StatusNotFound, "case not found")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"id": cid, "status": req.Status})
 }
 
 func (h *Handler) decideCase(w http.ResponseWriter, r *http.Request, targetStatus string) {

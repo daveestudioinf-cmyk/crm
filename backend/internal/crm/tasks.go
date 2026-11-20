@@ -2,6 +2,7 @@ package crm
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/httpx"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func parseNullableTime(raw string) (*time.Time, error) {
@@ -227,7 +229,8 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	tag, err := h.Pool.Exec(r.Context(), `
+	var retID, retTitle, retDesc, retStatus, retRecurrence string
+	err := h.Pool.QueryRow(r.Context(), `
 		UPDATE crm_tasks SET
 			title = COALESCE($3, title),
 			description = COALESCE($4, description),
@@ -237,17 +240,20 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 			assigned_to = COALESCE(NULLIF($9, '')::uuid, assigned_to),
 			updated_at = now()
 		WHERE id = $1 AND organization_id = $2
-	`, tid, id.OrganizationID, req.Title, req.Description, req.Status, clearDue, dueTime, req.Recurrence, assignedTo)
+		RETURNING id, title, COALESCE(description,''), status, COALESCE(recurrence,'')
+	`, tid, id.OrganizationID, req.Title, req.Description, req.Status, clearDue, dueTime, req.Recurrence, assignedTo).Scan(&retID, &retTitle, &retDesc, &retStatus, &retRecurrence)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Error(w, http.StatusNotFound, "task not found")
+			return
+		}
 		httpx.Error(w, http.StatusInternalServerError, "update failed")
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		httpx.Error(w, http.StatusNotFound, "task not found")
-		return
-	}
 	_ = auth.WriteAudit(r.Context(), h.Pool, id, "task.update", "task", tid, map[string]any{"updated": true})
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id": retID, "title": retTitle, "description": retDesc, "status": retStatus, "recurrence": retRecurrence,
+	})
 }
 
 func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {

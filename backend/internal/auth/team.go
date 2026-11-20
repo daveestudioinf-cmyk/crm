@@ -151,7 +151,11 @@ func (h *Handler) InspectInvite(w http.ResponseWriter, r *http.Request) {
 		WHERE ti.token_hash = $1
 	`, tokenHash).Scan(&email, &role, &orgName, &expiresAt, &acceptedAt)
 	if err != nil {
-		httpx.Error(w, http.StatusNotFound, "invite not found")
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"valid":    false,
+			"expired":  false,
+			"accepted": false,
+		})
 		return
 	}
 	expired := time.Now().After(expiresAt)

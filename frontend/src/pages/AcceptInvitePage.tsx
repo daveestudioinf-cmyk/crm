@@ -186,24 +186,26 @@ export function AcceptInvitePage() {
             )}
 
             <div className="space-y-1">
-              <label className="text-xs font-medium">Tu nombre completo</label>
+              <label htmlFor="invite-full-name" className="text-xs font-medium">Tu nombre completo</label>
               <Input
+                id="invite-full-name"
                 required
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
-                placeholder="Carlos Méndez"
+                placeholder="Tu nombre completo"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-xs font-medium">Contraseña (mín. 8 caracteres)</label>
+              <label htmlFor="invite-password" className="text-xs font-medium">Contraseña (mín. 8 caracteres)</label>
               <Input
+                id="invite-password"
                 type="password"
                 required
                 minLength={8}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="Mínimo 8 caracteres"
               />
             </div>
 

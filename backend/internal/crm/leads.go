@@ -328,8 +328,8 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 		h.Hub.Publish(id.OrganizationID, "lead.created", map[string]any{"id": lid, "stage_id": req.StageID})
 	}
 	httpx.JSON(w, http.StatusCreated, map[string]any{
-		"id": lid, "title": req.Title, "stage_id": req.StageID, "pipeline_id": req.PipelineID,
-		"position_in_stage": pos, "value_cents": req.ValueCents, "currency": req.Currency, "version": 1,
+		"id": lid, "contact_id": req.ContactID, "title": req.Title, "stage_id": req.StageID, "pipeline_id": req.PipelineID,
+		"position_in_stage": pos, "value_cents": req.ValueCents, "currency": req.Currency, "custom_fields": req.CustomFields, "version": 1,
 	})
 }
 
@@ -416,7 +416,9 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var newVer int
+	var newValueCents int64
 	var contactID, finalStageID, finalStatus string
+	var returnedCF json.RawMessage
 	var err error
 	if req.ExpectedVersion != nil {
 		err = h.Pool.QueryRow(r.Context(), `
@@ -436,9 +438,9 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 				last_activity_at = now(),
 				updated_at = now()
 			WHERE id = $1 AND organization_id = $2 AND version = $3
-			RETURNING version, contact_id, stage_id, status
+			RETURNING version, contact_id, stage_id, status, custom_fields, value_cents
 		`, lid, id.OrganizationID, *req.ExpectedVersion, req.StageID, req.PositionInStage, req.Title, req.ValueCents,
-			req.Currency, newStatus, req.LossReason, req.OwnerUserID, cfParam, req.Tags, newPipelineID).Scan(&newVer, &contactID, &finalStageID, &finalStatus)
+			req.Currency, newStatus, req.LossReason, req.OwnerUserID, cfParam, req.Tags, newPipelineID).Scan(&newVer, &contactID, &finalStageID, &finalStatus, &returnedCF, &newValueCents)
 		if errors.Is(err, pgx.ErrNoRows) {
 			var curVer int
 			if qErr := h.Pool.QueryRow(r.Context(), `SELECT version FROM crm_leads WHERE id = $1 AND organization_id = $2`, lid, id.OrganizationID).Scan(&curVer); qErr != nil {
@@ -469,9 +471,9 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 				last_activity_at = now(),
 				updated_at = now()
 			WHERE id = $1 AND organization_id = $2
-			RETURNING version, contact_id, stage_id, status
+			RETURNING version, contact_id, stage_id, status, custom_fields, value_cents
 		`, lid, id.OrganizationID, req.StageID, req.PositionInStage, req.Title, req.ValueCents,
-			req.Currency, newStatus, req.LossReason, req.OwnerUserID, cfParam, req.Tags, newPipelineID).Scan(&newVer, &contactID, &finalStageID, &finalStatus)
+			req.Currency, newStatus, req.LossReason, req.OwnerUserID, cfParam, req.Tags, newPipelineID).Scan(&newVer, &contactID, &finalStageID, &finalStatus, &returnedCF, &newValueCents)
 		if errors.Is(err, pgx.ErrNoRows) {
 			httpx.Error(w, http.StatusNotFound, "lead not found")
 			return
@@ -498,7 +500,7 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 	if h.Hub != nil {
 		h.Hub.Publish(id.OrganizationID, "lead.updated", map[string]any{"id": lid, "stage_id": finalStageID, "version": newVer})
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"status": "updated", "version": newVer, "lead_status": finalStatus})
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": finalStatus, "stage_id": finalStageID, "version": newVer, "lead_status": finalStatus, "custom_fields": returnedCF, "value_cents": newValueCents})
 }
 
 func (h *Handler) DeleteLead(w http.ResponseWriter, r *http.Request) {
@@ -622,7 +624,7 @@ func (h *Handler) CreateLeadLink(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusUnprocessableEntity, "cannot_link_self")
 		return
 	}
-	if req.LinkType == "" {
+	if req.LinkType == "" || req.LinkType == "related_deal" {
 		req.LinkType = "related"
 	}
 	switch req.LinkType {
@@ -686,9 +688,17 @@ func (h *Handler) CreateLeadActivity(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Type     string         `json:"type"`
 		Summary  string         `json:"summary"`
+		Body     string         `json:"body"`
 		Metadata map[string]any `json:"metadata"`
 	}
-	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Summary) == "" {
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.Summary) == "" {
+		req.Summary = strings.TrimSpace(req.Body)
+	}
+	if strings.TrimSpace(req.Summary) == "" {
 		httpx.Error(w, http.StatusBadRequest, "summary required")
 		return
 	}

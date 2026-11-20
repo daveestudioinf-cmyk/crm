@@ -267,6 +267,7 @@ export function TeamPage() {
                       <label className="text-[11px] text-[var(--text-muted)]">Máx. chats:</label>
                       <Input
                         type="number"
+                        aria-label="Capacidad máxima de chats"
                         min={1}
                         max={100}
                         className="w-16 h-9 text-xs"

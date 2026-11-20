@@ -97,6 +97,17 @@ export function KanbanPage() {
   const [mobileStageId, setMobileStageId] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState<{ tone: 'warning' | 'error' | 'success'; text: string } | null>(null);
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)').matches : true
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 768px)');
+    const onChange = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    setIsDesktop(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   // Create lead modal
   const [newOpen, setNewOpen] = useState(false);
@@ -145,11 +156,15 @@ export function KanbanPage() {
           null;
         setActivePipe(chosen);
         if (chosen) {
-          setMobileStageId((prev) =>
-            chosen.stages?.some((s) => s.id === prev) ? prev : chosen.stages?.[0]?.id || ''
-          );
           const lds = await apiFetch<Lead[]>(`/leads?pipeline_id=${chosen.id}`);
           setLeads(lds || []);
+          setMobileStageId((prev) =>
+            chosen.stages?.some((s) => s.id === prev)
+              ? prev
+              : chosen.stages?.find((s) => (lds || []).some((l) => l.stage_id === s.id))?.id ||
+                chosen.stages?.[0]?.id ||
+                ''
+          );
         } else {
           setLeads([]);
         }
@@ -547,13 +562,15 @@ export function KanbanPage() {
         </Card>
       ) : (
         <>
-          {/* Pestañas de etapas en móvil (390x844 sin overflow horizontal) */}
+          {!isDesktop && (
           <div className="md:hidden space-y-3 min-w-0">
-            <div className="flex gap-1.5 overflow-x-auto pb-1">
+            <div role="tablist" aria-label="Etapas del embudo" className="flex gap-1.5 overflow-x-auto pb-1">
               {stages.map((s) => (
                 <button
                   key={s.id}
                   type="button"
+                  role="tab"
+                  aria-selected={mobileStageId === s.id}
                   onClick={() => setMobileStageId(s.id)}
                   className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium cursor-pointer ${
                     mobileStageId === s.id
@@ -609,9 +626,10 @@ export function KanbanPage() {
                 ))}
             </div>
           </div>
+          )}
 
-          {/* Columnas Kanban escritorio */}
-          <div className="hidden md:flex gap-4 overflow-x-auto pb-4">
+          {isDesktop && (
+          <div tabIndex={0} role="region" aria-label="Tablero de etapas" className="hidden md:flex gap-4 overflow-x-auto pb-4">
             {stages.map((s) => {
               const colLeads = leads
                 .filter((l) => l.stage_id === s.id)
@@ -720,6 +738,7 @@ export function KanbanPage() {
               );
             })}
           </div>
+          )}
         </>
       )}
 

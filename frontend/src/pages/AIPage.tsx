@@ -498,6 +498,7 @@ export function AIPage() {
                     onChange={(e) => setKTitle(e.target.value)}
                   />
                   <select
+                    aria-label="Tipo de fuente"
                     value={kSourceType}
                     onChange={(e) => setKSourceType(e.target.value as 'faq' | 'markdown' | 'pdf')}
                     className="h-10 rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-2.5 text-sm"
@@ -648,8 +649,10 @@ export function AIPage() {
                   <Input required placeholder="Asesor Comercial" value={agName} onChange={(e) => setAgName(e.target.value)} />
                 </div>
                 <div>
-                  <label className="text-xs font-medium block mb-1">Proveedor</label>
+                  <label htmlFor="ag-provider" className="text-xs font-medium block mb-1">Proveedor</label>
                   <select
+                    id="ag-provider"
+                    aria-label="Proveedor"
                     value={agProvider}
                     onChange={(e) => setAgProvider(e.target.value)}
                     className="w-full h-10 rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-3 text-sm"
@@ -662,23 +665,25 @@ export function AIPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs font-medium block mb-1">Modelo</label>
-                  <Input required placeholder="gpt-4o-mini" value={agModel} onChange={(e) => setAgModel(e.target.value)} />
+                  <label htmlFor="ag-model" className="text-xs font-medium block mb-1">Modelo</label>
+                  <Input id="ag-model" required placeholder="gpt-4o-mini" value={agModel} onChange={(e) => setAgModel(e.target.value)} />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="text-xs font-medium block mb-1">Temperatura</label>
-                    <Input type="number" step="0.1" min="0" max="2" value={agTemp} onChange={(e) => setAgTemp(e.target.value)} />
+                    <label htmlFor="ag-temp" className="text-xs font-medium block mb-1">Temperatura</label>
+                    <Input id="ag-temp" aria-label="Temperatura" type="number" step="0.1" min="0" max="2" value={agTemp} onChange={(e) => setAgTemp(e.target.value)} />
                   </div>
                   <div>
-                    <label className="text-xs font-medium block mb-1">Máx. tokens</label>
-                    <Input type="number" min="50" max="8192" value={agMaxTokens} onChange={(e) => setAgMaxTokens(e.target.value)} />
+                    <label htmlFor="ag-max-tokens" className="text-xs font-medium block mb-1">Máx. tokens</label>
+                    <Input id="ag-max-tokens" aria-label="Máx. tokens" type="number" min="50" max="8192" value={agMaxTokens} onChange={(e) => setAgMaxTokens(e.target.value)} />
                   </div>
                 </div>
               </div>
               <div>
-                <label className="text-xs font-medium block mb-1">Prompt del sistema</label>
+                <label htmlFor="ag-prompt" className="text-xs font-medium block mb-1">Prompt del sistema</label>
                 <textarea
+                  id="ag-prompt"
+                  aria-label="Prompt del sistema"
                   required
                   rows={4}
                   value={agPrompt}

@@ -27,6 +27,7 @@ type Handler struct {
 
 type inboundLeadPayload struct {
 	Name        string   `json:"name"`
+	FullName    string   `json:"full_name"`
 	Phone       string   `json:"phone"`
 	PhoneNumber string   `json:"phone_number"`
 	Email       string   `json:"email"`
@@ -346,7 +347,14 @@ func (h *Handler) InboundLeadCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req inboundLeadPayload
-	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Name) == "" {
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		req.Name = req.FullName
+	}
+	if strings.TrimSpace(req.Name) == "" {
 		httpx.Error(w, http.StatusBadRequest, "name required")
 		return
 	}
@@ -409,15 +417,31 @@ func (h *Handler) ListRules(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	var req struct {
-		Name         string `json:"name"`
-		Description  string `json:"description"`
-		TriggerEvent string `json:"trigger_event"`
-		Conditions   any    `json:"conditions"`
-		Actions      any    `json:"actions"`
-		Priority     *int   `json:"priority"`
-		IsActive     bool   `json:"is_active"`
+		Name          string `json:"name"`
+		Description   string `json:"description"`
+		TriggerEvent  string `json:"trigger_event"`
+		TriggerType   string `json:"trigger_type"`
+		Conditions    any    `json:"conditions"`
+		ConditionJSON any    `json:"condition_json"`
+		Actions       any    `json:"actions"`
+		ActionJSON    any    `json:"action_json"`
+		Priority      *int   `json:"priority"`
+		IsActive      bool   `json:"is_active"`
 	}
-	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.TriggerEvent) == "" {
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.TriggerEvent) == "" {
+		req.TriggerEvent = req.TriggerType
+	}
+	if req.Conditions == nil {
+		req.Conditions = req.ConditionJSON
+	}
+	if req.Actions == nil {
+		req.Actions = req.ActionJSON
+	}
+	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.TriggerEvent) == "" {
 		httpx.Error(w, http.StatusBadRequest, "name and trigger_event required")
 		return
 	}
@@ -662,6 +686,9 @@ func (h *Handler) CreateLGPDRequest(w http.ResponseWriter, r *http.Request) {
 	if err := httpx.Decode(r, &req); err != nil || req.ContactID == "" {
 		httpx.Error(w, http.StatusBadRequest, "contact_id and request_type required")
 		return
+	}
+	if req.RequestType == "delete" || req.RequestType == "anonymize" {
+		req.RequestType = "redact"
 	}
 	if req.RequestType != "export" && req.RequestType != "redact" {
 		httpx.Error(w, http.StatusBadRequest, "invalid request_type")

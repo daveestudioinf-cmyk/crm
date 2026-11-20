@@ -256,13 +256,20 @@ test.describe('Tier 3 — Cross-Feature Pairwise Combinations', () => {
     );
     expect(pipelines.status).toBe(200);
 
+    const contact = await apiRequest<{ id: string }>(request, 'POST', '/api/v1/contacts', org.accessToken, {
+      name: 'Contacto T3-08',
+      phone_number: '+5215566667777',
+    });
+
     // Create sales deal & support ticket lead and link them (crm_lead_links)
     const salesLead = await apiRequest<{ id: string }>(request, 'POST', '/api/v1/leads', org.accessToken, {
       title: 'Trato Comercial Principal',
+      contact_id: contact.data.id,
       value_cents: 120000,
     });
     const supportLead = await apiRequest<{ id: string }>(request, 'POST', '/api/v1/leads', org.accessToken, {
       title: 'Ticket Soporte #402',
+      contact_id: contact.data.id,
       value_cents: 0,
     });
     expect(salesLead.ok).toBe(true);

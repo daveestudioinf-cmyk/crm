@@ -287,8 +287,12 @@ func (h *Handler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.RecoveryCode) != "" {
-		norm := NormalizeRecoveryCode(req.RecoveryCode)
+	recoveryInput := strings.TrimSpace(req.RecoveryCode)
+	if recoveryInput == "" && (len(strings.TrimSpace(req.Code)) > 6 || strings.Contains(req.Code, "-")) {
+		recoveryInput = strings.TrimSpace(req.Code)
+	}
+	if recoveryInput != "" {
+		norm := NormalizeRecoveryCode(recoveryInput)
 		codeHash := HashToken(norm)
 		var rcID string
 		err = h.Pool.QueryRow(r.Context(), `
@@ -610,10 +614,12 @@ func (h *Handler) CreateAPIToken(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := httpx.Decode(r, &req); err != nil || req.Name == "" {
+	req.Name = strings.TrimSpace(req.Name)
+	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Name) == "" {
 		httpx.Error(w, http.StatusBadRequest, "name required")
 		return
 	}
+	req.Name = strings.TrimSpace(req.Name)
 	raw, _ := RandomToken(24)
 	full := "crm_" + raw
 	var tid string

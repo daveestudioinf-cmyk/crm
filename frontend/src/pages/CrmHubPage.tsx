@@ -12,6 +12,8 @@ import {
   Settings,
   ArrowRight,
   RefreshCw,
+  Calendar,
+  Megaphone,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { useAuth } from '../App';
@@ -146,9 +148,25 @@ export function CrmHubPage() {
       metric: 'Monitoreo activo',
       tone: 'danger' as const,
     },
+    {
+      to: '/app/agenda',
+      title: 'Agenda y Lista de Espera',
+      description: 'Programa citas sin traslapes y promueve clientes desde la lista de espera.',
+      icon: Calendar,
+      metric: 'Citas y turnos',
+      tone: 'accent' as const,
+    },
   ];
 
   const managerDestinations = [
+    {
+      to: '/app/campaigns',
+      title: 'Campañas de WhatsApp',
+      description: 'Envíos segmentados con control anti-ban, límites diarios y exclusión STOP.',
+      icon: Megaphone,
+      metric: 'Outbound',
+      tone: 'accent' as const,
+    },
     {
       to: '/app/metrics',
       title: 'Analítica y Rendimiento',

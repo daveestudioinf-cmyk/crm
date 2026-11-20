@@ -156,6 +156,7 @@ export function OnboardingPage() {
   function goToStep(next: number) {
     setError('');
     setStep(next);
+    nav({ to: '/onboarding/$step', params: { step: String(next) } });
   }
 
   function applyPreset(preset: NichePreset) {
@@ -549,7 +550,7 @@ export function OnboardingPage() {
                 className="flex-1 min-w-[180px]"
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
-                placeholder="agente@empresa.com"
+                placeholder="correo@empresa.com"
               />
               <select
                 value={inviteRole}

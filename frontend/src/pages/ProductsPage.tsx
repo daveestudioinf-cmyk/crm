@@ -49,6 +49,17 @@ export function ProductsPage() {
   const [stockQty, setStockQty] = useState('0');
   const [isActive, setIsActive] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)').matches : true
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 768px)');
+    const onChange = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    setIsDesktop(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   const loadProducts = useCallback(async () => {
     try {
@@ -262,7 +273,7 @@ export function ProductsPage() {
         </Card>
       ) : (
         <>
-          {/* Tabla escritorio */}
+          {isDesktop && (
           <Card className="hidden md:block overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-sm">
@@ -332,8 +343,9 @@ export function ProductsPage() {
               </table>
             </div>
           </Card>
+          )}
 
-          {/* Tarjetas móvil (390x844 sin overflow horizontal) */}
+          {!isDesktop && (
           <div className="md:hidden space-y-2.5">
             {filtered.map((p) => (
               <Card key={p.id} className="p-3.5 space-y-2 min-w-0">
@@ -377,6 +389,7 @@ export function ProductsPage() {
               </Card>
             ))}
           </div>
+          )}
         </>
       )}
 
@@ -428,8 +441,10 @@ export function ProductsPage() {
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium">Moneda</label>
+              <label htmlFor="product-currency" className="text-xs font-medium">Moneda</label>
               <select
+                id="product-currency"
+                aria-label="Moneda"
                 value={currency}
                 onChange={(e) => setCurrency(e.target.value)}
                 className="h-10 w-full rounded-[10px] border border-[var(--border-input)] bg-[var(--bg)] px-3 text-sm"

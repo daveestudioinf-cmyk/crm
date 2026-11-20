@@ -85,7 +85,7 @@ test.describe('Feature #28: Tenant-isolated AI Agents (S17)', () => {
     expect(created.data.id).toBeTruthy();
 
     await page.goto('/app/ai');
-    await page.getByRole('tab', { name: 'Agente IA' }).click();
+    await page.getByRole('tab', { name: 'Agentes IA' }).click();
     await expect(page.getByText(agentName).first()).toBeVisible();
   });
 
@@ -717,7 +717,7 @@ test.describe('Feature #31: AI Providers, Usage & Budget Caps (S19)', () => {
   }) => {
     await setupAuthInBrowser(page, request);
     await page.goto('/app/ai');
-    await page.getByRole('tab', { name: 'Proveedores LLM' }).click();
+    await page.getByRole('tab', { name: 'Proveedores' }).click();
     await page.getByPlaceholder('API Key (sk-... / AIza...)').fill('sk-test-e2e-99998888');
     await page.getByRole('button', { name: 'Guardar Credencial Cifrada' }).click();
     await expect(page.getByText('sk-••••8888').first()).toBeVisible();

@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
@@ -508,3 +509,76 @@ func (h *Handler) ingestInbound(w http.ResponseWriter, r *http.Request, sessionI
 	})
 	httpx.JSON(w, http.StatusOK, map[string]any{"status": "received", "conversation_id": convID, "message_id": msgID})
 }
+
+func (h *Handler) SyncMetaTemplates(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	chID := chi.URLParam(r, "id")
+	var provider string
+	err := h.Pool.QueryRow(r.Context(), `
+		SELECT provider FROM channel_sessions WHERE id = $1 AND organization_id = $2
+	`, chID, id.OrganizationID).Scan(&provider)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if provider != "meta_cloud" {
+		httpx.Error(w, http.StatusBadRequest, "sync-templates is only supported for meta_cloud channels")
+		return
+	}
+	_, _ = h.Pool.Exec(r.Context(), `
+		INSERT INTO quick_replies (organization_id, shortcut, title, body, category)
+		VALUES ($1, '/recordatorio_cita', 'Recordatorio de cita (HSM)', 'Hola {{1}}, tu cita es mañana.', 'hsm')
+		ON CONFLICT DO NOTHING
+	`, id.OrganizationID)
+	httpx.JSON(w, http.StatusOK, map[string]any{"synced": 1, "provider": "meta_cloud"})
+}
+
+func (h *Handler) MetaWebhookVerify(w http.ResponseWriter, r *http.Request) {
+	session := chi.URLParam(r, "session")
+	mode := r.URL.Query().Get("hub.mode")
+	token := r.URL.Query().Get("hub.verify_token")
+	challenge := r.URL.Query().Get("hub.challenge")
+
+	var secret string
+	err := h.Pool.QueryRow(r.Context(), `
+		SELECT webhook_secret FROM channel_sessions WHERE session_name = $1 LIMIT 1
+	`, session).Scan(&secret)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if mode != "subscribe" || token == "" || token != secret {
+		httpx.Error(w, http.StatusForbidden, "invalid verify_token")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(challenge))
+}
+
+func (h *Handler) MetaWebhookReceive(w http.ResponseWriter, r *http.Request) {
+	session := chi.URLParam(r, "session")
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	var secret string
+	err = h.Pool.QueryRow(r.Context(), `
+		SELECT webhook_secret FROM channel_sessions WHERE session_name = $1 LIMIT 1
+	`, session).Scan(&secret)
+	if err != nil {
+		httpx.Error(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	sig := strings.TrimSpace(r.Header.Get("X-Hub-Signature-256"))
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(rawBody)
+	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	if sig == "" || !hmac.Equal([]byte(sig), []byte(expected)) {
+		httpx.Error(w, http.StatusUnauthorized, "invalid signature")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+

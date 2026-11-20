@@ -2,6 +2,7 @@ package crm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
@@ -151,7 +152,7 @@ func (h *Handler) ListContacts(w http.ResponseWriter, r *http.Request) {
 		var created any
 		_ = rows.Scan(&cid, &name, &phone, &email, &cpf, &tags, &blocked, &forceHuman, &anon, &created)
 		out = append(out, map[string]any{
-			"id": cid, "name": name, "phone_number": phone, "email": email, "cpf": cpf,
+			"id": cid, "name": name, "full_name": name, "phone_number": phone, "phone_e164": phone, "email": email, "cpf": cpf,
 			"tags": tags, "is_blocked": blocked, "force_human": forceHuman, "is_anonymized": anon, "created_at": created,
 		})
 	}
@@ -162,14 +163,32 @@ func (h *Handler) CreateContact(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	var req struct {
 		Name        string   `json:"name"`
+		FullName    string   `json:"full_name"`
 		PhoneNumber string   `json:"phone_number"`
+		PhoneE164   string   `json:"phone_e164"`
+		Phone       string   `json:"phone"`
 		Email       string   `json:"email"`
 		CPF         string   `json:"cpf"`
 		Tags        []string `json:"tags"`
+		IsBlocked   *bool    `json:"is_blocked"`
 	}
-	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Name) == "" {
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		req.Name = req.FullName
+	}
+	if strings.TrimSpace(req.Name) == "" {
 		httpx.Error(w, http.StatusBadRequest, "name is required")
 		return
+	}
+	if strings.TrimSpace(req.PhoneNumber) == "" {
+		if strings.TrimSpace(req.PhoneE164) != "" {
+			req.PhoneNumber = req.PhoneE164
+		} else {
+			req.PhoneNumber = req.Phone
+		}
 	}
 	if req.Tags == nil {
 		req.Tags = []string{}
@@ -190,6 +209,9 @@ func (h *Handler) CreateContact(w http.ResponseWriter, r *http.Request) {
 		}
 		httpx.Error(w, http.StatusInternalServerError, "failed to create contact")
 		return
+	}
+	if req.IsBlocked != nil && *req.IsBlocked {
+		_, _ = h.Pool.Exec(r.Context(), `UPDATE contacts SET is_blocked = true WHERE id = $1 AND organization_id = $2`, res.ContactID, id.OrganizationID)
 	}
 	if res.ResolvedExisting {
 		httpx.JSON(w, http.StatusOK, map[string]any{"id": res.ContactID, "resolved_existing": true})
@@ -337,7 +359,7 @@ func (h *Handler) GetContact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"id": cid, "name": name, "display_name": displayName, "phone_number": phone, "email": email, "cpf": cpf,
+		"id": cid, "name": name, "full_name": name, "display_name": displayName, "phone_number": phone, "email": email, "cpf": cpf,
 		"tags": tags, "custom_fields": customFields, "consent": consent, "is_blocked": blocked,
 		"force_human": forceHuman, "is_anonymized": anon, "is_merged_into": isMergedInto,
 		"created_at": created, "updated_at": updated,
@@ -391,7 +413,11 @@ func (h *Handler) UpdateContact(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	tag, err := h.Pool.Exec(r.Context(), `
+	var retID, retName, retDisplayName, retEmail, retPhone, retCPF string
+	var retTags []string
+	var retCustomFields, retConsent json.RawMessage
+	var retBlocked, retForceHuman bool
+	err := h.Pool.QueryRow(r.Context(), `
 		UPDATE contacts SET
 			name = COALESCE($3, name),
 			display_name = COALESCE($4, display_name),
@@ -405,19 +431,35 @@ func (h *Handler) UpdateContact(w http.ResponseWriter, r *http.Request) {
 			force_human = COALESCE($12, force_human),
 			updated_at = now()
 		WHERE id = $1 AND organization_id = $2
-	`, cid, id.OrganizationID, req.Name, req.DisplayName, req.Email, req.Phone, normalizedCPF, req.Tags, req.CustomFields, req.Consent, req.IsBlocked, req.ForceHuman)
+		RETURNING id, name, COALESCE(display_name,''), COALESCE(email,''), COALESCE(phone_number,''), COALESCE(cpf,''), tags, custom_fields, consent, is_blocked, force_human
+	`, cid, id.OrganizationID, req.Name, req.DisplayName, req.Email, req.Phone, normalizedCPF, req.Tags, req.CustomFields, req.Consent, req.IsBlocked, req.ForceHuman).Scan(
+		&retID, &retName, &retDisplayName, &retEmail, &retPhone, &retCPF, &retTags, &retCustomFields, &retConsent, &retBlocked, &retForceHuman,
+	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Error(w, http.StatusNotFound, "contact not found")
+			return
+		}
 		httpx.Error(w, http.StatusInternalServerError, "update failed")
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		httpx.Error(w, http.StatusNotFound, "contact not found")
 		return
 	}
 	_ = auth.WriteAudit(r.Context(), h.Pool, id, "contact.update", "contact", cid, map[string]any{
 		"cpf_updated": req.CPF != nil, "custom_fields_updated": req.CustomFields != nil,
 	})
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"status":        "updated",
+		"id":            retID,
+		"name":          retName,
+		"display_name":  retDisplayName,
+		"email":         retEmail,
+		"phone_number":  retPhone,
+		"cpf":           retCPF,
+		"tags":          retTags,
+		"custom_fields": retCustomFields,
+		"consent":       retConsent,
+		"is_blocked":    retBlocked,
+		"force_human":   retForceHuman,
+	})
 }
 
 func (h *Handler) AddContactPhone(w http.ResponseWriter, r *http.Request) {

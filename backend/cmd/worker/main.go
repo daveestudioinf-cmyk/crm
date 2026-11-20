@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -14,6 +15,7 @@ import (
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/automation"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/config"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/db"
+	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/inbox"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/realtime"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/whatsapp"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -70,6 +72,9 @@ func main() {
 	followupTicker := time.NewTicker(15 * time.Second)
 	defer followupTicker.Stop()
 
+	campaignTicker := time.NewTicker(15 * time.Second)
+	defer campaignTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -83,6 +88,8 @@ func main() {
 			syncSessions(ctx, pool, hub, evoClient)
 		case <-followupTicker.C:
 			enqueueDueFollowups(ctx, pool)
+		case <-campaignTicker.C:
+			enqueueDueCampaigns(ctx, pool)
 		}
 	}
 }
@@ -202,6 +209,9 @@ func drainEvents(
 
 		case "followup.dispatch":
 			handlerErr = handleFollowupDispatch(ctx, pool, evoClient, waThrottle, orgID, rawPayload)
+
+		case "campaign.send":
+			handlerErr = handleCampaignSend(ctx, pool, hub, evoClient, waThrottle, orgID, rawPayload)
 		}
 
 		if handlerErr != nil {
@@ -557,3 +567,228 @@ func enqueueDueFollowups(ctx context.Context, pool *pgxpool.Pool) {
 		}
 	}
 }
+
+func renderCampaignTemplate(tmpl, contactName string) string {
+	name := strings.TrimSpace(contactName)
+	out := strings.ReplaceAll(tmpl, "{{name}}", name)
+	out = strings.ReplaceAll(out, "{{nombre}}", name)
+	return out
+}
+
+func computeCampaignJitter(minDelaySec, maxDelaySec, throttlePerMinute int) int {
+	if minDelaySec <= 0 {
+		minDelaySec = 5
+	}
+	if maxDelaySec < minDelaySec {
+		maxDelaySec = minDelaySec
+	}
+	delay := minDelaySec
+	if maxDelaySec > minDelaySec {
+		delay = minDelaySec + rand.Intn(maxDelaySec-minDelaySec+1)
+	}
+	if throttlePerMinute > 0 {
+		minFromThrottle := 60 / throttlePerMinute
+		if minFromThrottle < 1 {
+			minFromThrottle = 1
+		}
+		if delay < minFromThrottle {
+			delay = minFromThrottle
+		}
+	}
+	return delay
+}
+
+func effectiveCampaignDailyLimit(warmupLimit, dailyCap int) int {
+	if warmupLimit <= 0 {
+		warmupLimit = 100
+	}
+	if dailyCap > 0 && dailyCap < warmupLimit {
+		return dailyCap
+	}
+	return warmupLimit
+}
+
+func enqueueDueCampaigns(ctx context.Context, pool *pgxpool.Pool) {
+	rows, err := pool.Query(ctx, `
+		UPDATE campaigns c
+		SET status = 'running',
+		    started_at = COALESCE(c.started_at, now()),
+		    updated_at = now()
+		FROM organizations o
+		WHERE c.organization_id = o.id
+		  AND o.is_suspended = false
+		  AND c.status = 'scheduled'
+		  AND c.scheduled_at IS NOT NULL
+		  AND c.scheduled_at <= now()
+		RETURNING c.id, c.organization_id, c.total_count
+	`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var campID, orgID string
+		var totalCount int
+		if rows.Scan(&campID, &orgID, &totalCount) == nil {
+			if totalCount == 0 {
+				_, _ = automation.MaterializeCampaignRecipients(ctx, pool, orgID, campID, nil)
+			}
+			_, _ = pool.Exec(ctx, `
+				INSERT INTO event_log (organization_id, event_type, payload, status, available_at)
+				VALUES ($1, 'campaign.send', jsonb_build_object('campaign_id', $2::text), 'pending', now())
+			`, orgID, campID)
+		}
+	}
+}
+
+func scheduleNextCampaignSend(ctx context.Context, pool *pgxpool.Pool, orgID, campaignID string, delaySeconds int) {
+	if delaySeconds < 0 {
+		delaySeconds = 0
+	}
+	_, _ = pool.Exec(ctx, `
+		INSERT INTO event_log (organization_id, event_type, payload, status, available_at)
+		VALUES ($1, 'campaign.send', jsonb_build_object('campaign_id', $2::text), 'pending', now() + ($3 * interval '1 second'))
+	`, orgID, campaignID, delaySeconds)
+}
+
+func handleCampaignSend(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	hub *realtime.Hub,
+	evoClient *whatsapp.EvolutionClient,
+	waThrottle *whatsapp.Handler,
+	orgID string,
+	rawPayload []byte,
+) error {
+	var p struct {
+		CampaignID string `json:"campaign_id"`
+	}
+	if err := json.Unmarshal(rawPayload, &p); err != nil {
+		return err
+	}
+	if strings.TrimSpace(p.CampaignID) == "" {
+		return nil
+	}
+
+	var status, channelSessionID, tmpl string
+	var throttlePerMin, minDelay, maxDelay, dailyCap int
+	var respectBH bool
+	err := pool.QueryRow(ctx, `
+		SELECT status, COALESCE(channel_session_id::text, ''), message_template,
+		       throttle_per_minute, min_delay_sec, max_delay_sec, daily_cap, respect_business_hours
+		FROM campaigns
+		WHERE id = $1 AND organization_id = $2
+	`, p.CampaignID, orgID).Scan(
+		&status, &channelSessionID, &tmpl,
+		&throttlePerMin, &minDelay, &maxDelay, &dailyCap, &respectBH,
+	)
+	if err != nil {
+		return nil
+	}
+	if status != "running" {
+		return nil
+	}
+
+	var sessionID, sessionName string
+	var warmupLimit int
+	var bhRaw []byte
+	if channelSessionID != "" {
+		_ = pool.QueryRow(ctx, `
+			SELECT id::text, session_name, warmup_daily_limit, business_hours
+			FROM channel_sessions
+			WHERE id = $1 AND organization_id = $2 AND status = 'WORKING'
+		`, channelSessionID, orgID).Scan(&sessionID, &sessionName, &warmupLimit, &bhRaw)
+	}
+	if sessionID == "" {
+		_ = pool.QueryRow(ctx, `
+			SELECT id::text, session_name, warmup_daily_limit, business_hours
+			FROM channel_sessions
+			WHERE organization_id = $1 AND status = 'WORKING'
+			ORDER BY created_at ASC LIMIT 1
+		`, orgID).Scan(&sessionID, &sessionName, &warmupLimit, &bhRaw)
+	}
+
+	if respectBH && len(bhRaw) > 0 {
+		var bhMap map[string]any
+		if json.Unmarshal(bhRaw, &bhMap) == nil && !inbox.CheckBusinessHours(bhMap, time.Now()) {
+			scheduleNextCampaignSend(ctx, pool, orgID, p.CampaignID, 15*60)
+			return nil
+		}
+	}
+
+	var recID, contactID, phone, contactName string
+	var isBlocked, isAnonymized, marketingConsent bool
+	err = pool.QueryRow(ctx, `
+		SELECT cr.id, cr.contact_id, cr.phone_number, COALESCE(c.name, ''),
+		       c.is_blocked, c.is_anonymized, COALESCE((c.consent->>'marketing')::boolean, true)
+		FROM campaign_recipients cr
+		JOIN contacts c ON c.id = cr.contact_id
+		WHERE cr.campaign_id = $1 AND cr.organization_id = $2 AND cr.status = 'pending'
+		ORDER BY cr.created_at ASC
+		LIMIT 1
+	`, p.CampaignID, orgID).Scan(&recID, &contactID, &phone, &contactName, &isBlocked, &isAnonymized, &marketingConsent)
+	if err != nil {
+		_, _ = pool.Exec(ctx, `
+			UPDATE campaigns
+			SET status = 'completed', completed_at = COALESCE(completed_at, now()), updated_at = now()
+			WHERE id = $1 AND organization_id = $2 AND status = 'running'
+		`, p.CampaignID, orgID)
+		if hub != nil {
+			hub.Publish(orgID, "campaign.updated", map[string]any{"campaign_id": p.CampaignID, "status": "completed"})
+		}
+		return nil
+	}
+
+	if isBlocked || isAnonymized || !marketingConsent || strings.TrimSpace(phone) == "" {
+		_, _ = pool.Exec(ctx, `UPDATE campaign_recipients SET status = 'skipped', error_message = 'opted_out', updated_at = now() WHERE id = $1`, recID)
+		_, _ = pool.Exec(ctx, `UPDATE campaigns SET skipped_count = skipped_count + 1, updated_at = now() WHERE id = $1`, p.CampaignID)
+		scheduleNextCampaignSend(ctx, pool, orgID, p.CampaignID, 1)
+		return nil
+	}
+
+	effectiveLimit := effectiveCampaignDailyLimit(warmupLimit, dailyCap)
+	if waThrottle != nil && sessionID != "" && !waThrottle.AllowOutbound(ctx, sessionID, effectiveLimit) {
+		scheduleNextCampaignSend(ctx, pool, orgID, p.CampaignID, 30*60)
+		return nil
+	}
+
+	msgText := renderCampaignTemplate(tmpl, contactName)
+	chunks := inbox.ChunkText(msgText, 4096)
+
+	var sendErr error
+	if evoClient != nil && sessionName != "" {
+		for _, chunk := range chunks {
+			if err := evoClient.SendText(ctx, sessionName, phone, chunk); err != nil {
+				sendErr = err
+				break
+			}
+		}
+	}
+
+	if sendErr != nil {
+		_, _ = pool.Exec(ctx, `UPDATE campaign_recipients SET status = 'failed', error_message = $2, updated_at = now() WHERE id = $1`, recID, sendErr.Error())
+		_, _ = pool.Exec(ctx, `UPDATE campaigns SET failed_count = failed_count + 1, updated_at = now() WHERE id = $1`, p.CampaignID)
+	} else {
+		_, _ = pool.Exec(ctx, `UPDATE campaign_recipients SET status = 'sent', sent_at = now(), updated_at = now() WHERE id = $1`, recID)
+		_, _ = pool.Exec(ctx, `UPDATE campaigns SET sent_count = sent_count + 1, updated_at = now() WHERE id = $1`, p.CampaignID)
+	}
+
+	var remaining int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = $1 AND status = 'pending'`, p.CampaignID).Scan(&remaining)
+	if remaining > 0 {
+		delay := computeCampaignJitter(minDelay, maxDelay, throttlePerMin)
+		scheduleNextCampaignSend(ctx, pool, orgID, p.CampaignID, delay)
+	} else {
+		_, _ = pool.Exec(ctx, `
+			UPDATE campaigns
+			SET status = 'completed', completed_at = COALESCE(completed_at, now()), updated_at = now()
+			WHERE id = $1 AND organization_id = $2
+		`, p.CampaignID, orgID)
+		if hub != nil {
+			hub.Publish(orgID, "campaign.updated", map[string]any{"campaign_id": p.CampaignID, "status": "completed"})
+		}
+	}
+	return nil
+}
+

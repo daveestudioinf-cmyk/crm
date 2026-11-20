@@ -68,8 +68,13 @@ test.describe('Feature #4: Append-only Audit Log (S24)', () => {
 
     test('F4-T1-4: Audit log records actor email/user_id and timestamp for each mutation', async ({ request }) => {
       const org = await signupViaAPI(request);
+      const c = await apiRequest<{ id: string }>(request, 'POST', '/api/v1/contacts', org.accessToken, {
+        name: 'Contacto Lead Audit',
+        phone_number: '+5215544445555',
+      });
       await apiRequest(request, 'POST', '/api/v1/leads', org.accessToken, {
         title: 'Lead Auditado',
+        contact_id: c.data.id,
         value_cents: 50000,
       });
 
@@ -1125,6 +1130,7 @@ test.describe('Feature #41: Mobile-First Kanban Stage-Tabs & Customer 360 Sheet'
       await loginViaUI(page, org.email, org.password);
       await page.goto('/app/kanban');
 
+      await expect(page.getByRole('tablist').first()).toBeVisible();
       const tabs = page.getByRole('tab');
       const count = await tabs.count();
       expect(count).toBeGreaterThan(0);

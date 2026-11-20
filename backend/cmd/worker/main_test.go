@@ -83,3 +83,27 @@ func TestMapEvolutionStateToStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestCampaignWorkerHelpers(t *testing.T) {
+	if got := renderCampaignTemplate("Hola {{nombre}}, bienvenido {{name}}!", " María "); got != "Hola María, bienvenido María!" {
+		t.Fatalf("unexpected template render: %q", got)
+	}
+
+	if got := effectiveCampaignDailyLimit(100, 40); got != 40 {
+		t.Fatalf("expected daily_cap 40 < warmup 100, got %d", got)
+	}
+	if got := effectiveCampaignDailyLimit(50, 200); got != 50 {
+		t.Fatalf("expected warmup 50 < daily_cap 200, got %d", got)
+	}
+	if got := effectiveCampaignDailyLimit(0, 0); got != 100 {
+		t.Fatalf("expected default warmup 100, got %d", got)
+	}
+
+	for i := 0; i < 20; i++ {
+		d := computeCampaignJitter(5, 15, 6) // 60/6 = 10s min from throttle
+		if d < 10 || d > 15 {
+			t.Fatalf("expected jitter in [10, 15], got %d", d)
+		}
+	}
+}
+

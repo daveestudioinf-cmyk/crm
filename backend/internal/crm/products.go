@@ -1,12 +1,14 @@
 package crm
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/auth"
 	"github.com/daveestudioinf-cmyk/crm-go/backend/internal/httpx"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 func (h *Handler) ListProducts(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +93,16 @@ func (h *Handler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		isActive = *req.IsActive
 	}
 
+	if req.SKU != "" {
+		var dupID string
+		if err := h.Pool.QueryRow(r.Context(), `
+			SELECT id FROM catalog_products WHERE organization_id = $1 AND sku = $2 LIMIT 1
+		`, id.OrganizationID, req.SKU).Scan(&dupID); err == nil {
+			httpx.Error(w, http.StatusConflict, "duplicate sku")
+			return
+		}
+	}
+
 	var pid string
 	err := h.Pool.QueryRow(r.Context(), `
 		INSERT INTO catalog_products (organization_id, sku, name, description, category, price_cents, currency, stock_qty, is_active)
@@ -138,7 +150,11 @@ func (h *Handler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tag, err := h.Pool.Exec(r.Context(), `
+	var retID, retSKU, retName, retDesc, retCat, retCurr string
+	var retPrice int64
+	var retStock int
+	var retActive bool
+	err := h.Pool.QueryRow(r.Context(), `
 		UPDATE catalog_products SET
 			sku = COALESCE($3, sku),
 			name = COALESCE($4, name),
@@ -150,17 +166,23 @@ func (h *Handler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 			is_active = COALESCE($10, is_active),
 			updated_at = now()
 		WHERE id = $1 AND organization_id = $2
-	`, pid, id.OrganizationID, req.SKU, req.Name, req.Description, req.Category, req.PriceCents, req.Currency, req.StockQty, req.IsActive)
+		RETURNING id, COALESCE(sku,''), name, COALESCE(description,''), category, price_cents, currency, stock_qty, is_active
+	`, pid, id.OrganizationID, req.SKU, req.Name, req.Description, req.Category, req.PriceCents, req.Currency, req.StockQty, req.IsActive).Scan(
+		&retID, &retSKU, &retName, &retDesc, &retCat, &retPrice, &retCurr, &retStock, &retActive,
+	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Error(w, http.StatusNotFound, "product not found")
+			return
+		}
 		httpx.Error(w, http.StatusInternalServerError, "update failed")
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		httpx.Error(w, http.StatusNotFound, "product not found")
-		return
-	}
 	_ = auth.WriteAudit(r.Context(), h.Pool, id, "product.update", "product", pid, map[string]any{"updated": true})
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"status": "updated", "id": retID, "sku": retSKU, "name": retName, "description": retDesc,
+		"category": retCat, "price_cents": retPrice, "currency": retCurr, "stock_qty": retStock, "is_active": retActive,
+	})
 }
 
 func (h *Handler) DeleteProduct(w http.ResponseWriter, r *http.Request) {

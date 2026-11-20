@@ -22,6 +22,8 @@ import {
   Package,
   Activity,
   FileSearch,
+  Megaphone,
+  Calendar,
 } from 'lucide-react';
 import { cn, Sheet } from '../ui/primitives';
 import {
@@ -52,7 +54,9 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: any; minRole?: string;
   { to: '/app/kanban', label: 'Embudo', icon: Kanban, matchPrefixes: ['/app/kanban', '/app/pipelines', '/app/leads'] },
   { to: '/app/contacts', label: 'Contactos', icon: Users },
   { to: '/app/tasks', label: 'Tareas', icon: CheckSquare },
+  { to: '/app/agenda', label: 'Agenda', icon: Calendar },
   { to: '/app/products', label: 'Productos', icon: Package },
+  { to: '/app/campaigns', label: 'Campañas', icon: Megaphone, minRole: 'manager' },
   { to: '/app/ai', label: 'IA y RAG', icon: Bot, minRole: 'manager', matchPrefixes: ['/app/ai'] },
   { to: '/app/channels', label: 'WhatsApp', icon: Radio, minRole: 'manager' },
   { to: '/app/webhooks', label: 'Automatizaciones', icon: Webhook, minRole: 'manager', matchPrefixes: ['/app/webhooks'] },
@@ -238,7 +242,7 @@ export function AppShell({
       >
         {[
           { to: '/app/inbox', label: 'Bandeja', icon: MessageSquare },
-          { to: '/app/kanban', label: 'Embudo', icon: Kanban, matchPrefixes: ['/app/kanban', '/app/pipelines', '/app/leads'] },
+          { to: '/app/kanban', label: 'Embudos', icon: Kanban, matchPrefixes: ['/app/kanban', '/app/pipelines', '/app/leads'] },
           { to: '/app/contacts', label: 'Contactos', icon: Users },
           { to: '/app/crm', label: 'CRM', icon: Briefcase },
         ].map((item) => {

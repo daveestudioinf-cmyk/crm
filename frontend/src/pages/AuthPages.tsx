@@ -212,7 +212,7 @@ export function ForgotPasswordPage() {
           <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 space-y-1.5">
             <div className="flex items-center gap-1.5 font-semibold">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <span>Solicitud enviada</span>
+              <span>Revisa tu correo</span>
             </div>
             <p>
               Si existe una cuenta asociada a <strong>{email}</strong>, recibirás instrucciones para restablecer tu contraseña.

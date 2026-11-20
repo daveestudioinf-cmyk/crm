@@ -322,12 +322,13 @@ export function SettingsPage() {
             <h2 className="text-sm font-semibold">Información personal y contraseña</h2>
             <form onSubmit={saveProfile} className="space-y-3.5 max-w-md">
               <div className="space-y-1">
-                <label className="text-xs font-medium">Correo electrónico</label>
-                <Input disabled value={user?.email || ''} />
+                <label htmlFor="settings-email" className="text-xs font-medium">Correo electrónico</label>
+                <Input id="settings-email" disabled value={user?.email || ''} />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium">Nombre completo</label>
+                <label htmlFor="settings-fullname" className="text-xs font-medium">Nombre completo</label>
                 <Input
+                  id="settings-fullname"
                   required
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}

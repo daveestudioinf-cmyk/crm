@@ -3,9 +3,11 @@ import { createRoot } from 'react-dom/client';
 import './index.css';
 import App from './App';
 
-if ('serviceWorker' in navigator) {
+if (import.meta.env.PROD && 'serviceWorker' in navigator && navigator.onLine) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    if (navigator.onLine) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
   });
 }
 

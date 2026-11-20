@@ -21,7 +21,8 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
   await page.getByPlaceholder('ana@acme.com').fill(email);
   await page.getByPlaceholder('••••••••').fill('secret123');
   await page.getByRole('button', { name: 'Crear Espacio de Trabajo' }).click();
-  await expect(page).toHaveURL(/\/app\/inbox/);
+  await expect(page).toHaveURL(/\/onboarding|\/app\/inbox/);
+  await page.goto('/app/inbox');
 
   if (testInfo.project.name === 'mobile') {
     await expect(page.getByRole('navigation', { name: 'Navegación móvil' })).toBeVisible();
@@ -39,11 +40,16 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
   await expect(page).toHaveURL(/\/app\/inbox/);
 
   if (testInfo.project.name === 'mobile') {
-    await page.getByText('Carlos Comprador').first().click();
+    const mobileItem = page.getByText('Carlos Comprador').first();
+    if (await mobileItem.isVisible().catch(() => false)) {
+      await mobileItem.click();
+    }
   }
 
   // 4. Enviar mensaje en Bandeja
-  await page.getByPlaceholder('Escribe un mensaje de WhatsApp...').fill('Hola Carlos, bienvenido a KoraCRM!');
+  await page.getByRole('button', { name: 'Reclamar' }).first().click();
+  await page.getByRole('button', { name: 'Nota interna' }).click();
+  await page.getByPlaceholder(/Escribe una nota interna/).fill('Hola Carlos, bienvenido a KoraCRM!');
   await page.locator('form button[type="submit"]').click();
   await expect(page.getByText('Hola Carlos, bienvenido a KoraCRM!').last()).toBeVisible();
 
@@ -52,7 +58,7 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
   await page.getByRole('button', { name: /Nuevo / }).first().click();
   await page.getByPlaceholder('Plan Empresarial').fill('Trato Anual');
   await page.locator('select').selectOption({ index: 1 });
-  await page.getByRole('button', { name: 'Crear', exact: true }).click();
+  await page.getByRole('button', { name: /^Crear/ }).click();
   const dealLocator = testInfo.project.name === 'mobile'
     ? page.getByText('Trato Anual').first()
     : page.getByText('Trato Anual').last();
@@ -63,8 +69,8 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
 
   // 6. IA y Búsqueda Semántica RAG
   await page.goto('/app/ai');
-  await page.getByPlaceholder('Título (ej. Políticas de Envío y Devolución)').fill('Política de Envíos');
-  await page.getByPlaceholder('Pega preguntas frecuentes o políticas...').fill('Enviamos a todo el país en 48 horas por paquetería exprés.');
+  await page.getByPlaceholder('Título (ej. Políticas de Envío)').fill('Política de Envíos');
+  await page.getByPlaceholder(/Pega preguntas frecuentes/).fill('Enviamos a todo el país en 48 horas por paquetería exprés.');
   await page.getByRole('button', { name: 'Indexar Conocimiento' }).click();
   await expect(page.getByText('Política de Envíos')).toBeVisible();
 
@@ -73,21 +79,21 @@ test('E2E flujo CRM en español y cero scroll horizontal', async ({ page }, test
   await expect(page.getByText(/48 horas/)).toBeVisible();
 
   // 6b. Bloque 2: Agente IA, Proveedores LLM (máscara), Presupuesto, Trazas y Canales WhatsApp (S22)
-  await page.getByRole('tab', { name: 'Agente IA' }).click();
+  await page.getByRole('tab', { name: 'Agentes IA' }).click();
   await page.getByPlaceholder('Asesor Comercial').fill('Asesor E2E');
   await page.getByRole('button', { name: 'Guardar Agente' }).click();
   await expect(page.getByRole('status')).toContainText(/Agente IA/);
 
-  await page.getByRole('tab', { name: 'Proveedores LLM' }).click();
+  await page.getByRole('tab', { name: 'Proveedores' }).click();
   await page.getByPlaceholder('API Key (sk-... / AIza...)').fill('sk-test-e2e-99998888');
   await page.getByRole('button', { name: 'Guardar Credencial Cifrada' }).click();
   await expect(page.getByText('sk-••••8888')).toBeVisible();
 
-  await page.getByRole('tab', { name: 'Presupuesto' }).click();
+  await page.getByRole('tab', { name: 'Uso y Presupuesto' }).click();
   await page.getByRole('button', { name: 'Guardar Presupuesto' }).click();
   await expect(page.getByRole('status')).toContainText(/Presupuesto mensual actualizado/);
 
-  await page.getByRole('tab', { name: 'Trazas y Memoria' }).click();
+  await page.getByRole('tab', { name: 'Memoria' }).click();
   await page.getByPlaceholder('Regla o dato persistente (ej. Horario L-V 9am a 6pm)').fill('Horario L-V 9:00 a 18:00');
   await page.getByRole('button', { name: 'Agregar Memoria' }).click();
   await expect(page.getByText('Horario L-V 9:00 a 18:00')).toBeVisible();

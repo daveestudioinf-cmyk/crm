@@ -14,6 +14,11 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.url.includes('/api/')) return;
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    fetch(event.request).catch(() => {
+      if (event.request.mode === 'navigate') {
+        return caches.match('/').then((res) => res || caches.match(event.request));
+      }
+      return caches.match(event.request);
+    })
   );
 });

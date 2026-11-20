@@ -59,7 +59,7 @@ function generateTOTP(base32Secret: string, timeStepOffset = 0): string {
 async function seedAuthenticatedSession(page: Page, accessToken: string): Promise<void> {
   await page.goto('/login');
   await page.evaluate((token) => {
-    localStorage.setItem('koracrm_token', token);
+    localStorage.setItem('koracrm_access_token', token);
   }, accessToken);
 }
 

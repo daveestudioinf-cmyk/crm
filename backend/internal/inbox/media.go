@@ -94,6 +94,16 @@ func (h *Handler) UploadMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	lowerName := strings.ToLower(header.Filename)
+	declaredCT := strings.ToLower(strings.TrimSpace(header.Header.Get("Content-Type")))
+	if strings.HasSuffix(lowerName, ".exe") || strings.HasSuffix(lowerName, ".bat") ||
+		strings.HasSuffix(lowerName, ".cmd") || strings.HasSuffix(lowerName, ".sh") ||
+		strings.HasSuffix(lowerName, ".dll") || strings.HasSuffix(lowerName, ".msi") ||
+		strings.Contains(declaredCT, "x-msdownload") || strings.Contains(declaredCT, "x-dosexec") {
+		httpx.Error(w, http.StatusUnsupportedMediaType, "executable files are not allowed")
+		return
+	}
+
 	contentType := detectMediaContentType(data, header.Header.Get("Content-Type"), header.Filename)
 	if !allowedMediaTypes[contentType] {
 		httpx.Error(w, http.StatusUnsupportedMediaType, "unsupported media content type: "+contentType)
