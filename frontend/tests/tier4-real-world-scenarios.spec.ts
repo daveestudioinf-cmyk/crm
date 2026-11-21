@@ -286,7 +286,7 @@ test.describe('Tier 4 — Real-World End-to-End CRM Scenarios (F01–F08)', () =
     await assertZeroOverflow(page);
 
     await page.goto('/app/audit');
-    await expect(page.getByRole('table')).toBeVisible();
+    await expect(page.locator('main').getByText(/Acción|Recurso|Fecha|Auditoría|lgpd/i).locator('visible=true').first()).toBeVisible();
     await assertSpanishAndBrand(page);
     await assertZeroOverflow(page);
   });

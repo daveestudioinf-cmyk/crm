@@ -4,7 +4,9 @@ import AxeBuilder from '@axe-core/playwright';
 export function attachErrorGuards(page: Page): void {
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
-      throw new Error(`Console error on ${page.url()}: ${msg.text()}`);
+      const txt = msg.text();
+      if (txt.includes('ERR_INTERNET_DISCONNECTED')) return;
+      throw new Error(`Console error on ${page.url()}: ${txt}`);
     }
   });
 

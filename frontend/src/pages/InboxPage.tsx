@@ -634,7 +634,7 @@ export function InboxPage() {
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
                   {selected.status !== 'claimed' && (
-                    <Button size="sm" disabled={claiming} onClick={handleClaim}>
+                    <Button size="sm" disabled={claiming} onClick={handleClaim} aria-label="Reclamar" title="Reclamar">
                       <UserCheck className="w-3.5 h-3.5" />
                       <span className="hidden sm:inline">
                         {claiming ? 'Reclamando...' : 'Reclamar'}

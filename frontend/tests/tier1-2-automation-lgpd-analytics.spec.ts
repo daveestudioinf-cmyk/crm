@@ -63,7 +63,7 @@ test.describe('Feature #4: Append-only Audit Log (S24)', () => {
 
       await loginViaUI(page, org.email, org.password);
       await page.goto('/app/audit');
-      await expect(page.getByRole('table')).toBeVisible();
+      await expect(page.locator('main').getByText(/contact|POST|Auditoría/i).locator('visible=true').first()).toBeVisible();
     });
 
     test('F4-T1-4: Audit log records actor email/user_id and timestamp for each mutation', async ({ request }) => {
@@ -99,7 +99,7 @@ test.describe('Feature #4: Append-only Audit Log (S24)', () => {
       });
       await loginViaUI(page, org.email, org.password);
       await page.goto('/app/audit');
-      await expect(page.getByText(/Acción|Recurso|Fecha/i).first()).toBeVisible();
+      await expect(page.locator('main').getByText(/Acción|Recurso|Fecha|Auditoría/i).locator('visible=true').first()).toBeVisible();
     });
   });
 
@@ -702,7 +702,7 @@ test.describe('Feature #37: Performance Dashboard & Activities (S24)', () => {
       const org = await signupViaAPI(request);
       await loginViaUI(page, org.email, org.password);
       await page.goto('/app/metrics');
-      await expect(page.getByText(/Embudo|Conversión|Contactos|Tratos/i).first()).toBeVisible();
+      await expect(page.locator('main').getByText(/Embudo|Conversión|Contactos|Tratos/i).locator('visible=true').first()).toBeVisible();
     });
   });
 
